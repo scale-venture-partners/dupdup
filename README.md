@@ -261,16 +261,24 @@ coupling, not a clean per-test result).
 This runs strictly sequentially — one file, one mutant, one test run at a
 time — so it's slow on a large `--source` set; scope it to the modules you
 actually want mutation coverage of, not a whole codebase at once.
+`--pytest-cmd` is split on plain whitespace with no quoting, so a command
+whose own arguments need a space (a quoted path, for instance) doesn't
+work here.
 
-Verified end to end against a small real project: mutating a module with
-5 comparison/arithmetic/boolean/boundary mutants plus 2 in genuinely
-untested branches produced exactly 5 kills, correctly attributed
-per-test (including one mutant killed by 3 different tests, confirmed via
-the batch-then-drill-down attribution), and exactly 2 "no coverage"
-results matching coverage.py's own uncovered-line count — not 7
-survivors, which is what a line-granularity (rather than
+Verified end to end against a small real project, not just unit tests —
+`collect` itself needs a real pytest run, so it isn't unit-tested beyond
+its pure helpers (`backup_path`) and the `RestoreOnDrop` safety net,
+which is: mutating a module with 5 comparison/arithmetic/boolean/boundary
+mutants plus 2 in genuinely untested branches produced exactly 5 kills,
+correctly attributed per-test (including one mutant killed by 3 different
+tests, confirmed via the batch-then-drill-down attribution), and exactly
+2 "no coverage" results matching coverage.py's own uncovered-line count —
+not 7 survivors, which is what a line-granularity (rather than
 enclosing-statement) candidate lookup produced before that bug was found
-and fixed.
+and fixed. The same run also found and fixed a second bug: a stale or
+nonexistent test id surfaced as an ambiguous pytest exit code read
+mid-mutation rather than a clean error — moved to the up-front
+`--collect-only` validation pass instead.
 
 ## Why two tiers, not one
 

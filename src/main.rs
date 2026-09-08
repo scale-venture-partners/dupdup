@@ -82,6 +82,8 @@ enum Commands {
         coverage_json: PathBuf,
         /// Base command to invoke pytest with; one or more node ids are
         /// appended per invocation. No flags of dupdup's own are added.
+        /// Split on whitespace with no quoting — a path or argument with a
+        /// space in it doesn't work here.
         #[arg(long, default_value = "python -m pytest")]
         pytest_cmd: String,
         /// Per-invocation wall-clock budget, in seconds.

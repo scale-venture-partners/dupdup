@@ -312,3 +312,54 @@ pub fn collect(
     );
     Ok(kills)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backup_path_appends_a_suffix_to_the_full_filename() {
+        assert_eq!(
+            backup_path(Path::new("a/b.py")),
+            PathBuf::from("a/b.py.dupdup-orig")
+        );
+    }
+
+    #[test]
+    fn restore_on_drop_restores_original_content_when_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.py");
+        std::fs::write(&path, "original\n").unwrap();
+
+        {
+            let _guard = RestoreOnDrop {
+                path: path.clone(),
+                original: "original\n".to_string(),
+            };
+            std::fs::write(&path, "mutated\n").unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "mutated\n");
+        }
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "original\n");
+    }
+
+    #[test]
+    fn restore_on_drop_restores_even_when_the_scope_exits_via_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.py");
+        std::fs::write(&path, "original\n").unwrap();
+        let path_for_guard = path.clone();
+
+        let result = std::panic::catch_unwind(move || {
+            let _guard = RestoreOnDrop {
+                path: path_for_guard.clone(),
+                original: "original\n".to_string(),
+            };
+            std::fs::write(&path_for_guard, "mutated\n").unwrap();
+            panic!("simulated failure while a mutant is live on disk");
+        });
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "original\n");
+    }
+}
