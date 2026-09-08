@@ -45,11 +45,16 @@ enum Commands {
         coverage_json: Option<PathBuf>,
         /// pytest `--junitxml` output from the same run as --coverage-json.
         /// Cross-checked against the test count coverage-json actually
-        /// recorded contexts for, so a run where Python's `sysmon` coverage
-        /// core silently dropped contexts fails loudly instead of analyzing
-        /// partial data.
+        /// recorded contexts for, so a run missing context data for tests
+        /// that genuinely ran fails loudly instead of analyzing partial
+        /// data. Pass --allow-incomplete-context to proceed anyway.
         #[arg(long)]
         junit_xml: Option<PathBuf>,
+        /// Proceed even if --junit-xml finds tests with no coverage-context
+        /// data, instead of erroring. Use once you've confirmed the gap is
+        /// benign (see the error message this would otherwise print).
+        #[arg(long)]
+        allow_incomplete_context: bool,
         /// Test-to-killed-mutant JSON (see `dupdup::dynamic::killmatrix` for
         /// the schema). No upstream tool produces this yet.
         #[arg(long)]
@@ -74,11 +79,13 @@ fn main() -> anyhow::Result<()> {
         Commands::Analyze {
             coverage_json,
             junit_xml,
+            allow_incomplete_context,
             kill_matrix_json,
             json,
         } => run_analyze(
             coverage_json.as_deref(),
             junit_xml.as_deref(),
+            allow_incomplete_context,
             kill_matrix_json.as_deref(),
             json,
         ),
@@ -229,25 +236,42 @@ fn run_check(
     Ok(())
 }
 
-/// A run under Python 3.12+'s `sysmon` coverage core silently drops dynamic
-/// contexts for some tests rather than erroring. `--junit-xml` gives the
-/// count of tests that actually executed their body (passed + failed,
-/// excluding skipped/errored) so a shortfall against the coverage-json
-/// context count is caught here instead of analyzing incomplete data.
-fn check_context_completeness(found_test_count: usize, junit_path: &Path) -> anyhow::Result<()> {
+/// `--junit-xml` gives the count of tests that actually executed their body
+/// (passed + failed, excluding skipped/errored), so a shortfall against the
+/// coverage-json context count means some of them have no context data at
+/// all. Two real causes, both confirmed against real codebases: Python
+/// 3.12+'s `sysmon` coverage core drops dynamic contexts silently (fix:
+/// `COVERAGE_CORE=ctrace`), or a test genuinely executes no traceable line
+/// in the covered package — a pure static-analysis check, or code whose
+/// only work happens inside a compiled extension (e.g. Pydantic v2's Rust
+/// validation core). The second cause is normal in a large, real codebase,
+/// so this only hard-errors by default; `--allow-incomplete-context` lets a
+/// caller who has confirmed the gap is benign proceed anyway.
+fn check_context_completeness(
+    found_test_count: usize,
+    junit_path: &Path,
+    allow_incomplete: bool,
+) -> anyhow::Result<()> {
     let summary = dynamic::junit::load(junit_path)?;
     if found_test_count < summary.ran {
-        anyhow::bail!(
+        let message = format!(
             "coverage-json has dynamic-context data for {found_test_count} test(s), but \
              junit-xml recorded {ran} test(s) that ran ({skipped} skipped, {errored} errored). \
-             {missing} test(s) are missing context data — most likely the run used Python's \
-             `sysmon` coverage core, which drops dynamic contexts silently. Re-run with \
-             `COVERAGE_CORE=ctrace` (or `core = ctrace` in .coveragerc).",
+             {missing} test(s) have no context data at all — either Python's `sysmon` coverage \
+             core (3.12+) silently dropped them (try `COVERAGE_CORE=ctrace`), or they genuinely \
+             execute no traceable line in the covered package (e.g. a compiled-extension-only \
+             code path, or a test that touches nothing under --cov). Pass \
+             --allow-incomplete-context once you've confirmed which.",
             ran = summary.ran,
             skipped = summary.skipped,
             errored = summary.errored,
             missing = summary.ran.saturating_sub(found_test_count),
         );
+        if allow_incomplete {
+            eprintln!("warning: {message}");
+        } else {
+            anyhow::bail!(message);
+        }
     }
     Ok(())
 }
@@ -255,6 +279,7 @@ fn check_context_completeness(found_test_count: usize, junit_path: &Path) -> any
 fn run_analyze(
     coverage_json: Option<&Path>,
     junit_xml: Option<&Path>,
+    allow_incomplete_context: bool,
     kill_matrix_json: Option<&Path>,
     json: bool,
 ) -> anyhow::Result<()> {
@@ -263,10 +288,14 @@ fn run_analyze(
     if let Some(cov_path) = coverage_json {
         let loaded = dynamic::coverage::load(cov_path)?;
         match junit_xml {
-            Some(junit_path) => check_context_completeness(loaded.tests.len(), junit_path)?,
+            Some(junit_path) => check_context_completeness(
+                loaded.tests.len(),
+                junit_path,
+                allow_incomplete_context,
+            )?,
             None => eprintln!(
-                "warning: no --junit-xml given — a run with silently-dropped dynamic contexts \
-                 (e.g. Python's sysmon coverage core) can't be detected. Pass --junit-xml to enable that check."
+                "warning: no --junit-xml given — a run with tests missing context data \
+                 can't be detected. Pass --junit-xml to enable that check."
             ),
         }
         reports.push(AnalyzeReport {
@@ -326,5 +355,34 @@ mod tests {
     fn is_excluded_with_no_patterns_excludes_nothing() {
         let patterns = compile_globs(&[]).unwrap();
         assert!(!is_excluded(Path::new("anything.py"), &patterns));
+    }
+
+    fn write_junit(xml: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut f, xml.as_bytes()).unwrap();
+        f
+    }
+
+    const TWO_PASSED_JUNIT: &str = r#"<testsuite tests="2">
+        <testcase classname="t" name="a"/>
+        <testcase classname="t" name="b"/>
+    </testsuite>"#;
+
+    #[test]
+    fn context_shortfall_errors_by_default() {
+        let f = write_junit(TWO_PASSED_JUNIT);
+        assert!(check_context_completeness(1, f.path(), false).is_err());
+    }
+
+    #[test]
+    fn context_shortfall_is_a_warning_not_an_error_when_allowed() {
+        let f = write_junit(TWO_PASSED_JUNIT);
+        assert!(check_context_completeness(1, f.path(), true).is_ok());
+    }
+
+    #[test]
+    fn no_shortfall_is_always_ok() {
+        let f = write_junit(TWO_PASSED_JUNIT);
+        assert!(check_context_completeness(2, f.path(), false).is_ok());
     }
 }

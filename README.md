@@ -100,6 +100,14 @@ sharing coverage is the point of parametrizing, not evidence of redundancy.
 That exemption is scoped to the sibling pair itself: `test_foo[1]` can
 still be flagged against an unrelated test, e.g. `test_bar`.
 
+`DUPLICATE_COVERAGE`, `SUBSUMED_COVERAGE`, and `CONTRIBUTES_NOTHING_UNIQUE`
+only ever compare two tests in the **same test file**. Calibrating against
+a real ~2000-test production suite found that essentially every cross-file
+pairing was two tests from unrelated feature areas that happened to share
+coverage of common infrastructure (middleware, logging, a shared client) —
+not genuine redundancy. Acting on those findings would have meant deleting
+the only direct test of whichever behavior got flagged as "subsumed."
+
 **These relations are computed per test independently.** If two tests each
 happen to be reproducible by the rest of the suite, that does not mean both
 are safe to delete together — removing both could drop real coverage. This
@@ -107,6 +115,22 @@ is the same caveat as classic test-suite-minimization literature: computing
 a jointly minimal safe-to-remove set is a harder (NP-complete in general)
 set-cover problem that dupdup doesn't attempt. Treat findings as leads to
 review, not a script to run.
+
+**Known limitation: same-file boundary-condition tests still false-positive
+as duplicates.** A function that loops over sorted thresholds and returns
+through the same two lines regardless of which one matched (`derive_tier`,
+say) makes every one of its boundary tests — one per threshold, each
+checking a different, meaningful outcome — show up with identical line
+coverage. Same-file scoping doesn't help here, since these tests *are* in
+the same file. Fixing this needs per-branch dynamic-context data; `coverage
+json --show-contexts`'s report format doesn't expose that even with branch
+coverage turned on (confirmed empirically: its per-line `contexts` map
+doesn't vary by which branch a line's context took — only the raw SQLite
+`.coverage` file's internal, schema-versioned `arc` table has it, which
+this loader deliberately doesn't parse). Until that's solved, treat any
+`DUPLICATE_COVERAGE`/`SUBSUMED_COVERAGE` finding between same-file tests
+with very similar names (boundary/edge-case siblings) with extra
+skepticism.
 
 ### Coverage source
 
@@ -116,14 +140,23 @@ python -m coverage json --show-contexts -o coverage.json
 dupdup analyze --coverage-json coverage.json --junit-xml junit.xml
 ```
 
-`COVERAGE_CORE=ctrace` is required on Python 3.12+: `coverage.py`'s default
-`sysmon` core silently drops dynamic-context data for some tests instead of
-erroring. `--junit-xml` lets dupdup cross-check the number of tests that
-actually ran (passed + failed, per the junit report) against the number it
-found context data for in `coverage.json`, and refuse to analyze on a
-mismatch rather than silently reporting on a partial suite. Passing
+`COVERAGE_CORE=ctrace` is recommended on Python 3.12+: `coverage.py`'s
+default `sysmon` core silently drops dynamic-context data for some tests
+instead of erroring. `--junit-xml` lets dupdup cross-check the number of
+tests that actually ran (passed + failed, per the junit report) against the
+number it found context data for in `coverage.json`, and refuse to analyze
+on a mismatch rather than silently reporting on a partial suite. Passing
 `--coverage-json` without `--junit-xml` still works, with a warning that
 this check is skipped.
+
+A shortfall isn't always the sysmon bug, though — calibrating against a
+real suite found a context-count mismatch caused by tests that genuinely
+execute no traceable line in the covered package (a pure static-analysis
+check, or a test whose only work happens inside a compiled extension like
+Pydantic v2's Rust validation core). That's normal in a large real
+codebase, not a bug, so the error message names both possibilities instead
+of assuming sysmon, and `--allow-incomplete-context` turns the hard error
+into a warning once you've confirmed which cause applies.
 
 ### Mutation source
 
@@ -172,6 +205,11 @@ every commit, run `analyze` in CI against a real coverage/mutation run.
   calibrating against a real suite (see above), still unresolved because a
   safe heuristic (e.g. requiring a `side_effect=`-injecting `patch(...)` in
   scope) hasn't been validated against enough real cases yet.
+- Per-branch dynamic-context data for the coverage source, to catch
+  same-file boundary-condition tests that collapse to identical line
+  coverage (see the known limitation above) — needs a real design decision
+  about whether that means parsing `coverage.py`'s internal SQLite schema
+  directly, since the public JSON report format doesn't expose it.
 - A kill-matrix collector, once the mutation-tier producer question above is
   resolved.
 
