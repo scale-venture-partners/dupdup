@@ -2,6 +2,11 @@ def test_never_fails():
     compute_something()
 
 
+def test_stub_never_implemented():
+    """Placeholder — needs real fixtures."""
+    pass
+
+
 def test_repeats_itself():
     result = compute_something()
     assert result == 3

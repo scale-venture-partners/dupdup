@@ -13,8 +13,11 @@ pub fn parse(source: &str) -> anyhow::Result<Tree> {
 }
 
 /// Pytest's default discovery convention (`python_functions = test_*`).
-/// Methods on unittest-style `Test*` classes are picked up too, since this
-/// walk doesn't distinguish nesting depth.
+/// Methods on unittest-style `Test*` classes are picked up too. A function
+/// nested inside another function is never itself discovered by pytest
+/// regardless of its name — e.g. a fixture's inner route handler that
+/// happens to be called `test_endpoint` — so this doesn't descend into a
+/// function body once it's found one, matched or not.
 pub fn find_test_functions<'a>(root: Node<'a>, source: &'a [u8]) -> Vec<Node<'a>> {
     let mut out = Vec::new();
     collect_test_functions(root, source, &mut out);
@@ -34,6 +37,7 @@ fn collect_test_functions<'a>(node: Node<'a>, source: &'a [u8], out: &mut Vec<No
                     out.push(child);
                 }
             }
+            continue;
         }
         collect_test_functions(child, source, out);
     }
