@@ -1,9 +1,18 @@
+//! Static, tree-sitter-based rules over Python test source (`dupdup check`).
+//! No test execution — this module only parses and walks the AST.
+
+/// The individual rule checks (`NO_ASSERTIONS`, `DUPLICATE_ASSERT`,
+/// `TAUTOLOGICAL_ASSERT`) plus the `Violation`/`Severity` types they emit.
 pub mod rules;
 
 use crate::config::Config;
 use rules::Violation;
 use tree_sitter::{Node, Parser, Tree};
 
+/// Parses `source` as Python.
+///
+/// # Errors
+/// Returns an error if the tree-sitter-python grammar can't be loaded.
 pub fn parse(source: &str) -> anyhow::Result<Tree> {
     let mut parser = Parser::new();
     parser.set_language(&tree_sitter_python::LANGUAGE.into())?;
@@ -44,6 +53,7 @@ fn collect_test_functions<'a>(node: Node<'a>, source: &'a [u8], out: &mut Vec<No
     }
 }
 
+/// The name of the `def` node `fn_node` points at.
 #[must_use]
 pub fn test_name<'a>(fn_node: Node<'a>, source: &'a [u8]) -> &'a str {
     fn_node
@@ -68,6 +78,12 @@ fn is_suppressed(lines: &[&str], line_1indexed: usize, rule: &str) -> bool {
             .is_some_and(|l| check(l))
 }
 
+/// Runs every enabled static rule over each `test_*` function in `source`,
+/// tags each violation with `path`, and drops any suppressed by a
+/// `# dupdup: ignore[RULE]` comment.
+///
+/// # Errors
+/// Returns an error if `source` can't be parsed as Python.
 pub fn check_file(path: &str, source: &str, config: &Config) -> anyhow::Result<Vec<Violation>> {
     let tree = parse(source)?;
     let source_bytes = source.as_bytes();

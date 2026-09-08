@@ -1,7 +1,11 @@
+//! Human-readable and JSON rendering for both `dupdup check` and
+//! `dupdup analyze` findings.
+
 use crate::redundancy::{RedundancyFinding, RedundancyKind};
 use crate::static_lint::rules::{Severity, Violation};
 use serde::Serialize;
 
+/// Prints `violations` as one line each, then an error/warning summary.
 pub fn print_check_human(violations: &[Violation]) {
     for v in violations {
         let sev = match v.severity {
@@ -27,6 +31,10 @@ pub fn print_check_human(violations: &[Violation]) {
     );
 }
 
+/// Prints `violations` as a JSON array.
+///
+/// # Errors
+/// Returns an error if serialization fails (never expected in practice).
 pub fn print_check_json(violations: &[Violation]) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(violations)?);
     Ok(())
@@ -47,10 +55,14 @@ fn kind_label(kind: RedundancyKind) -> &'static str {
 /// a coverage line-index and a mutant-id index mean different things at the
 /// same bit position, so they're never merged into one `analyze` call.
 pub struct AnalyzeReport {
+    /// `"coverage"` or `"mutation"`.
     pub source: &'static str,
+    /// Findings from running `redundancy::analyze` over this source alone.
     pub findings: Vec<RedundancyFinding>,
 }
 
+/// Prints each report's findings under a `-- source --` header, then a
+/// total count.
 pub fn print_analyze_human(reports: &[AnalyzeReport]) {
     let mut total = 0;
     for report in reports {
@@ -81,6 +93,11 @@ struct JsonFinding<'a> {
     related: &'a [String],
 }
 
+/// Prints every report's findings as one flat JSON array, each entry tagged
+/// with its `source`.
+///
+/// # Errors
+/// Returns an error if serialization fails (never expected in practice).
 pub fn print_analyze_json(reports: &[AnalyzeReport]) -> anyhow::Result<()> {
     let flat: Vec<JsonFinding> = reports
         .iter()

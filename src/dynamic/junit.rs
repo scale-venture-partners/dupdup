@@ -7,11 +7,19 @@ use std::path::Path;
 /// contributed coverage); `<skipped>`/`<error>` mean it didn't.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct JunitSummary {
+    /// Test cases that ran to completion, passed or failed.
     pub ran: usize,
+    /// Test cases marked `<skipped>`.
     pub skipped: usize,
+    /// Test cases marked `<error>` (failed before the body ran, e.g. a
+    /// fixture error).
     pub errored: usize,
 }
 
+/// Loads and summarizes a pytest `--junitxml` report at `path`.
+///
+/// # Errors
+/// Returns an error if `path` can't be read or isn't valid XML.
 pub fn load(path: &Path) -> anyhow::Result<JunitSummary> {
     let text = std::fs::read_to_string(path)?;
     parse(&text)

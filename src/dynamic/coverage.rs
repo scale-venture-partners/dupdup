@@ -16,14 +16,10 @@ struct FileReport {
     contexts: HashMap<String, Vec<String>>,
 }
 
+/// A coverage run's per-test line coverage, ready for `redundancy::analyze`.
 pub struct LoadedCoverage {
+    /// One entry per test id found in the coverage-json contexts.
     pub tests: Vec<TestCoverage>,
-}
-
-impl LoadedCoverage {
-    pub fn test_ids(&self) -> impl Iterator<Item = &str> {
-        self.tests.iter().map(|t| t.test_id.as_str())
-    }
 }
 
 /// A non-empty context is `<test id>|<phase>` (pytest-cov only records the
@@ -36,6 +32,11 @@ fn context_test_id(context: &str) -> Option<&str> {
     context.split('|').next()
 }
 
+/// Loads a `coverage json --show-contexts` report from `path` and inverts
+/// its line-to-contexts map into one bitset per test.
+///
+/// # Errors
+/// Returns an error if `path` can't be read or isn't valid coverage-json.
 pub fn load(path: &Path) -> anyhow::Result<LoadedCoverage> {
     let text = std::fs::read_to_string(path)?;
     let report: CoverageReport = serde_json::from_str(&text)?;

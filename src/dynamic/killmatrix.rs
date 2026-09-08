@@ -12,10 +12,18 @@ struct KillMatrixReport {
     tests: HashMap<String, Vec<String>>,
 }
 
+/// A kill matrix's per-test killed-mutant coverage, ready for
+/// `redundancy::analyze`.
 pub struct LoadedKillMatrix {
+    /// One entry per test id in the kill matrix.
     pub tests: Vec<TestCoverage>,
 }
 
+/// Loads a `{"tests": {"<test id>": ["<mutant id>", ...]}}` kill-matrix
+/// report from `path` into one bitset per test.
+///
+/// # Errors
+/// Returns an error if `path` can't be read or doesn't match that schema.
 pub fn load(path: &Path) -> anyhow::Result<LoadedKillMatrix> {
     let text = std::fs::read_to_string(path)?;
     let report: KillMatrixReport = serde_json::from_str(&text)?;

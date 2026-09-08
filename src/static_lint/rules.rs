@@ -1,20 +1,33 @@
+//! The static rules `check_file` runs, and the `Violation`/`Severity` types
+//! they emit.
+
 use serde::Serialize;
 use tree_sitter::Node;
 
+/// `Error` fails `dupdup check`'s exit code; `Warn` is reported but doesn't.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
+    /// Blocks the check.
     Error,
+    /// Reported but non-blocking.
     Warn,
 }
 
+/// One static-rule finding.
 #[derive(Debug, Clone, Serialize)]
 pub struct Violation {
+    /// The file the violation was found in.
     pub file: String,
+    /// 1-indexed line the violation is anchored to.
     pub line: usize,
+    /// Whether this violation blocks the check.
     pub severity: Severity,
+    /// The rule name, e.g. `"NO_ASSERTIONS"`.
     pub rule: &'static str,
+    /// The test function the violation is in.
     pub test_name: String,
+    /// Human-readable explanation of the violation.
     pub message: String,
 }
 

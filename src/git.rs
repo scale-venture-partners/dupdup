@@ -18,12 +18,19 @@ fn run(repo_root: &Path, args: &[&str]) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// The git repository root containing `start`.
+///
+/// # Errors
+/// Returns an error if `start` isn't inside a git repository.
 pub fn repo_root(start: &Path) -> anyhow::Result<PathBuf> {
     let out = run(start, &["rev-parse", "--show-toplevel"])?;
     Ok(PathBuf::from(out.trim()))
 }
 
 /// Files staged for commit (added/copied/modified), relative to repo root.
+///
+/// # Errors
+/// Returns an error if `repo_root` isn't a git repository.
 pub fn staged_files(repo_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let out = run(
         repo_root,
@@ -33,6 +40,9 @@ pub fn staged_files(repo_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
 }
 
 /// All git-tracked files, relative to repo root.
+///
+/// # Errors
+/// Returns an error if `repo_root` isn't a git repository.
 pub fn all_files(repo_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let out = run(repo_root, &["ls-files"])?;
     Ok(out.lines().map(PathBuf::from).collect())
@@ -40,6 +50,10 @@ pub fn all_files(repo_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
 
 /// The staged (index) content of `file`, i.e. what would actually be
 /// committed — not the working-tree copy, which may have unstaged edits.
+///
+/// # Errors
+/// Returns an error if `repo_root` isn't a git repository or `file` isn't
+/// staged.
 pub fn staged_content(repo_root: &Path, file: &Path) -> anyhow::Result<String> {
     let spec = format!(":{}", file.to_string_lossy());
     run(repo_root, &["show", &spec])

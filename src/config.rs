@@ -1,9 +1,13 @@
+//! `dupdup.toml` config: which static rules run, and which paths to skip.
+
 use serde::Deserialize;
 use std::path::Path;
 
+/// Settings for the `NO_ASSERTIONS` rule.
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct NoAssertionsConfig {
+    /// Whether this rule runs at all.
     pub enabled: bool,
 }
 
@@ -13,9 +17,11 @@ impl Default for NoAssertionsConfig {
     }
 }
 
+/// Settings for the `DUPLICATE_ASSERT` rule.
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct DuplicateAssertConfig {
+    /// Whether this rule runs at all.
     pub enabled: bool,
 }
 
@@ -25,9 +31,11 @@ impl Default for DuplicateAssertConfig {
     }
 }
 
+/// Settings for the `TAUTOLOGICAL_ASSERT` rule.
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct TautologicalAssertConfig {
+    /// Whether this rule runs at all.
     pub enabled: bool,
 }
 
@@ -37,15 +45,19 @@ impl Default for TautologicalAssertConfig {
     }
 }
 
+/// The full `[dupdup]` table of `dupdup.toml`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// Glob patterns (relative to repo root) to skip entirely.
     pub exclude: Vec<String>,
+    /// `NO_ASSERTIONS` rule settings.
     #[serde(rename = "no_assertions")]
     pub no_assertions: NoAssertionsConfig,
+    /// `DUPLICATE_ASSERT` rule settings.
     #[serde(rename = "duplicate_assert")]
     pub duplicate_assert: DuplicateAssertConfig,
+    /// `TAUTOLOGICAL_ASSERT` rule settings.
     #[serde(rename = "tautological_assert")]
     pub tautological_assert: TautologicalAssertConfig,
 }
@@ -57,6 +69,11 @@ struct RawConfig {
 }
 
 impl Config {
+    /// Loads `dupdup.toml` from `path`, or the all-enabled default if it
+    /// doesn't exist.
+    ///
+    /// # Errors
+    /// Returns an error if `path` exists but isn't valid TOML.
     pub fn load(path: &Path) -> anyhow::Result<Config> {
         if !path.exists() {
             return Ok(Config::default());

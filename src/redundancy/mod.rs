@@ -1,3 +1,7 @@
+//! The bitset engine shared by both dynamic-tier loaders: given a set of
+//! `(test_id, requirement_bitset)` pairs, `analyze` finds duplicate,
+//! subsumed, and vacuous tests.
+
 use fixedbitset::FixedBitSet;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -7,10 +11,13 @@ use std::collections::HashSet;
 /// loader. Both loaders produce this same shape so a single engine below
 /// can find redundancy relations in either.
 pub struct TestCoverage {
+    /// The test's id, as produced by its loader (e.g. a pytest node id).
     pub test_id: String,
+    /// The requirements (lines, or mutants) this test covers.
     pub bits: FixedBitSet,
 }
 
+/// A relation `analyze` found between one test and the rest of the suite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RedundancyKind {
@@ -27,10 +34,16 @@ pub enum RedundancyKind {
     CoversNothing,
 }
 
+/// One test flagged by `analyze`, and why.
 #[derive(Debug, Serialize)]
 pub struct RedundancyFinding {
+    /// Which relation was found.
     pub kind: RedundancyKind,
+    /// The test the finding is about.
     pub test_id: String,
+    /// The other test(s) it's redundant against, if the relation names one
+    /// (empty for `ContributesNothingUnique` and `CoversNothing`, which are
+    /// about the whole suite or nothing at all).
     pub related: Vec<String>,
 }
 
@@ -52,6 +65,9 @@ fn is_subset(a: &FixedBitSet, b: &FixedBitSet) -> bool {
     diff.count_ones(..) == 0
 }
 
+/// Finds redundancy relations among `tests`. All of `tests` must share one
+/// requirement universe (all from the same loader) — comparing bitsets from
+/// different universes produces meaningless results.
 #[must_use]
 pub fn analyze(tests: &[TestCoverage]) -> Vec<RedundancyFinding> {
     let n = tests.len();

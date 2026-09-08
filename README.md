@@ -19,8 +19,8 @@ friendly, same shape as [windbag](https://github.com/scale-venture-partners/wind
 | `TAUTOLOGICAL_ASSERT` | error | `assert x == x` where neither side contains a call — both sides are the same expression, so the assertion is true independent of the code under test. `assert f(x) == f(x)` is excluded: that's testing that `f` is deterministic, not a tautology. |
 | `DUPLICATE_ASSERT` | warn | Two `assert` statements that are true source-adjacent siblings (nothing else between them) with identical (whitespace-normalized) text. Not flagged if anything sits between them — re-checking an unchanged invariant after a further action is normal test structure, not duplication. |
 
-Calibrated against a real ~130-file test suite (svp-mcp): the first pass
-(before the exemptions above existed) produced 76 findings; 61 of those
+Calibrated against a real ~130-file production Python test suite: the first
+pass (before the exemptions above existed) produced 76 findings; 61 of those
 were false positives from exactly the patterns the exemptions now cover —
 Mock/unittest/local-helper assertion calls, `f(x) == f(x)` determinism
 checks, and re-verifying an invariant after a state-changing action several
@@ -151,3 +151,13 @@ every commit, run `analyze` in CI against a real coverage/mutation run.
   scope) hasn't been validated against enough real cases yet.
 - A kill-matrix collector, once the mutation-tier producer question above is
   resolved.
+
+## Development
+
+```bash
+cargo test               # unit + integration tests
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+```
+
+CI runs all three on every push and pull request.
