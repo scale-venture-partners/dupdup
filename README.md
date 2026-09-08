@@ -15,9 +15,20 @@ friendly, same shape as [windbag](https://github.com/scale-venture-partners/wind
 
 | Rule | Severity | Flags |
 |---|---|---|
-| `NO_ASSERTIONS` | error | A test with no `assert` and no `pytest.raises`/`assertRaises` context — it can't fail regardless of what the code does. |
-| `TAUTOLOGICAL_ASSERT` | error | `assert x == x` — both sides of `==` are the same expression. |
-| `DUPLICATE_ASSERT` | warn | Two `assert` statements in one test with identical (whitespace-normalized) text. |
+| `NO_ASSERTIONS` | error | A test with no `assert`, no `mock.assert_*(...)`/`self.assertX(...)`/shared `_assert_helper(...)`/`pytest.fail(...)` call, no `pytest.skip(...)` call, and no `pytest.raises`/`assertRaises` context — it can't fail (or self-report as skipped) regardless of what the code does. |
+| `TAUTOLOGICAL_ASSERT` | error | `assert x == x` where neither side contains a call — both sides are the same expression, so the assertion is true independent of the code under test. `assert f(x) == f(x)` is excluded: that's testing that `f` is deterministic, not a tautology. |
+| `DUPLICATE_ASSERT` | warn | Two `assert` statements that are true source-adjacent siblings (nothing else between them) with identical (whitespace-normalized) text. Not flagged if anything sits between them — re-checking an unchanged invariant after a further action is normal test structure, not duplication. |
+
+Calibrated against a real ~130-file test suite (svp-mcp): the first pass
+(before the exemptions above existed) produced 76 findings; 61 of those
+were false positives from exactly the patterns the exemptions now cover —
+Mock/unittest/local-helper assertion calls, `f(x) == f(x)` determinism
+checks, and re-verifying an invariant after a state-changing action several
+lines later. The remaining 15 are almost all one pattern this tier doesn't
+yet resolve: a test whose only check is that a call doesn't raise (e.g.
+verifying exception-swallowing/resilience code) has no assertion of any
+kind and is indistinguishable, to a static rule, from a test that simply
+forgot to assert something.
 
 ```bash
 cargo install --path .
@@ -32,9 +43,9 @@ suppresses it, same placement as windbag.
 
 Only pytest's own discovery convention is checked: functions named `test_*`,
 in files named `test_*.py` or `*_test.py` for `--staged`/`--all` (an
-explicit path is checked regardless of its name). unittest-style
-`self.assert*` calls and mock-only assertions aren't recognized yet — both
-are documented gaps, not silent failures.
+explicit path is checked regardless of its name), and never a function
+nested inside another function — pytest doesn't discover those either,
+regardless of name.
 
 ## `dupdup analyze` — dynamic, requires running the suite
 
@@ -130,7 +141,13 @@ every commit, run `analyze` in CI against a real coverage/mutation run.
   AST-normalized test bodies, flag near-identical siblings that differ only
   in literals).
 - Mock-only-assertion detection (every assertion in a test traces back to a
-  `Mock()`/`patch()` object the test itself configured).
-- unittest-style `self.assert*` support alongside bare `assert`.
+  `Mock()`/`patch()` object the test itself configured — a different
+  question from whether a `mock.assert_*()` call counts as an assertion at
+  all, which `NO_ASSERTIONS` already handles).
+- A `NO_ASSERTIONS` exemption for a body whose only checks are that a call
+  doesn't raise — the single largest remaining false-positive class found
+  calibrating against a real suite (see above), still unresolved because a
+  safe heuristic (e.g. requiring a `side_effect=`-injecting `patch(...)` in
+  scope) hasn't been validated against enough real cases yet.
 - A kill-matrix collector, once the mutation-tier producer question above is
   resolved.
