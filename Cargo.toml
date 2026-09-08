@@ -1,0 +1,30 @@
+[package]
+name = "dupdup"
+version = "0.1.0"
+edition = "2021"
+description = "Test-suite redundancy linter: static AST rules plus coverage/mutation-based duplicate-test analysis"
+license = "MIT"
+repository = "https://github.com/scale-venture-partners/dupdup"
+
+[lib]
+name = "dupdup"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dupdup"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+tree-sitter = "0.25"
+tree-sitter-python = "0.25"
+fixedbitset = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+anyhow = "1"
+quick-xml = "0.36"
+
+[dev-dependencies]
+tempfile = "3"

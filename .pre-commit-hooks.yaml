@@ -1,0 +1,7 @@
+- id: dupdup
+  name: dupdup
+  description: Flags empty, tautological, and duplicate assertions in Python tests
+  entry: dupdup check --staged
+  language: system
+  pass_filenames: false
+  types_or: [python]
