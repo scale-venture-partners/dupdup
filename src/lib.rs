@@ -9,6 +9,8 @@ pub mod config;
 pub mod dynamic;
 /// Git plumbing for discovering staged/tracked files.
 pub mod git;
+/// A self-contained mutation-testing kill-matrix collector.
+pub mod mutate;
 /// Human-readable and JSON rendering of findings.
 pub mod output;
 /// The shared bitset engine both dynamic-tier loaders feed into.

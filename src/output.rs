@@ -1,9 +1,10 @@
-//! Human-readable and JSON rendering for both `dupdup check` and
-//! `dupdup analyze` findings.
+//! Human-readable and JSON rendering for `dupdup check`, `dupdup analyze`,
+//! and `dupdup mutate`.
 
 use crate::redundancy::{RedundancyFinding, RedundancyKind};
 use crate::static_lint::rules::{Severity, Violation};
 use serde::Serialize;
+use std::collections::HashMap;
 
 /// Prints `violations` as one line each, then an error/warning summary.
 pub fn print_check_human(violations: &[Violation]) {
@@ -111,5 +112,24 @@ pub fn print_analyze_json(reports: &[AnalyzeReport]) -> anyhow::Result<()> {
         })
         .collect();
     println!("{}", serde_json::to_string_pretty(&flat)?);
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct KillMatrix<'a> {
+    tests: &'a HashMap<String, Vec<String>>,
+}
+
+/// Prints a mutation collector's kill matrix in the
+/// `{"tests": {"<test id>": ["<mutant id>", ...]}}` shape
+/// `dynamic::killmatrix::load` reads back in.
+///
+/// # Errors
+/// Returns an error if serialization fails (never expected in practice).
+pub fn print_kill_matrix_json(kills: &HashMap<String, Vec<String>>) -> anyhow::Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&KillMatrix { tests: kills })?
+    );
     Ok(())
 }

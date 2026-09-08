@@ -1,10 +1,11 @@
 use clap::{Parser, Subcommand};
 use dupdup::config::Config;
 use dupdup::static_lint::rules::Severity;
-use dupdup::{dynamic, git, output, redundancy, static_lint};
+use dupdup::{dynamic, git, mutate, output, redundancy, static_lint};
 use output::AnalyzeReport;
 use regex::Regex;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(
@@ -64,6 +65,29 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Self-contained mutation-testing kill-matrix collector. Mutates each
+    /// source in place, one mutant at a time, running only the tests
+    /// --coverage-json says cover it. Prints the kill-matrix JSON `analyze
+    /// --kill-matrix-json` reads.
+    Mutate {
+        /// Source file(s) to mutate — application code, not test files.
+        /// Spelled exactly as they appear as keys in --coverage-json's own
+        /// "files" map, and run from the same working directory that
+        /// coverage run used.
+        #[arg(required = true)]
+        sources: Vec<PathBuf>,
+        /// Output of `coverage json --show-contexts` from the run whose
+        /// tests should be considered as candidates.
+        #[arg(long)]
+        coverage_json: PathBuf,
+        /// Base command to invoke pytest with; one or more node ids are
+        /// appended per invocation. No flags of dupdup's own are added.
+        #[arg(long, default_value = "python -m pytest")]
+        pytest_cmd: String,
+        /// Per-invocation wall-clock budget, in seconds.
+        #[arg(long, default_value_t = 30)]
+        timeout_secs: u64,
+    },
     /// Write a default dupdup.toml to the current directory
     Init,
 }
@@ -91,6 +115,12 @@ fn main() -> anyhow::Result<()> {
             kill_matrix_json.as_deref(),
             json,
         ),
+        Commands::Mutate {
+            sources,
+            coverage_json,
+            pytest_cmd,
+            timeout_secs,
+        } => run_mutate(&sources, &coverage_json, &pytest_cmd, timeout_secs),
         Commands::Init => run_init(),
     }
 }
@@ -324,6 +354,26 @@ fn run_analyze(
         output::print_analyze_human(&reports);
     }
     Ok(())
+}
+
+fn run_mutate(
+    sources: &[PathBuf],
+    coverage_json: &Path,
+    pytest_cmd: &str,
+    timeout_secs: u64,
+) -> anyhow::Result<()> {
+    let pytest_cmd: Vec<String> = pytest_cmd.split_whitespace().map(String::from).collect();
+    anyhow::ensure!(!pytest_cmd.is_empty(), "--pytest-cmd must not be empty");
+
+    let cwd = std::env::current_dir()?;
+    let repo_root = git::repo_root(&cwd)?;
+    let coverage = dynamic::coverage::load_line_coverage(coverage_json)?;
+    let cfg = mutate::RunConfig {
+        pytest_cmd,
+        timeout: Duration::from_secs(timeout_secs),
+    };
+    let kills = mutate::collect(&repo_root, sources, &coverage, &cfg)?;
+    output::print_kill_matrix_json(&kills)
 }
 
 #[cfg(test)]

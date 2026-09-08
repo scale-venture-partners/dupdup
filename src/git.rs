@@ -95,6 +95,37 @@ pub fn staged_content(repo_root: &Path, file: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&blob.data).into_owned())
 }
 
+/// Whether `file`'s on-disk content is byte-identical to its `HEAD`
+/// version — i.e. fully recoverable with `git checkout -- file` even
+/// without dupdup's own in-memory copy. A file absent from `HEAD` (never
+/// committed) is never clean by this definition: there's no commit to
+/// fall back on if an in-place edit is lost.
+///
+/// # Errors
+/// Returns an error if `repo_root` isn't a git repository, `file` can't
+/// be read, or `HEAD` can't be resolved.
+pub fn is_clean(repo_root: &Path, file: &Path) -> Result<bool> {
+    let repo = open_repo(repo_root)?;
+    let tree_id = repo
+        .head_tree_id_or_empty()
+        .context("failed to resolve HEAD's tree")?;
+    let mut tree = repo
+        .find_tree(tree_id)
+        .context("failed to read HEAD's tree")?;
+    let Some(entry) = tree
+        .peel_to_entry_by_path(file)
+        .with_context(|| format!("failed to look up {} in HEAD", file.display()))?
+    else {
+        return Ok(false);
+    };
+    let committed = repo
+        .find_blob(entry.id())
+        .with_context(|| format!("failed to read the HEAD blob for {}", file.display()))?;
+    let on_disk = std::fs::read(repo_root.join(file))
+        .with_context(|| format!("failed to read {}", file.display()))?;
+    Ok(on_disk == committed.data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +225,44 @@ mod tests {
         let dir = init_repo();
         fs::write(dir.path().join("f.py"), "x = 1\n").unwrap();
         assert!(staged_content(dir.path(), Path::new("f.py")).is_err());
+    }
+
+    #[test]
+    fn is_clean_true_for_an_unmodified_committed_file() {
+        let dir = init_repo();
+        fs::write(dir.path().join("f.py"), "x = 1\n").unwrap();
+        run(dir.path(), &["add", "f.py"]);
+        run(dir.path(), &["commit", "-q", "-m", "init"]);
+        assert!(is_clean(dir.path(), Path::new("f.py")).unwrap());
+    }
+
+    #[test]
+    fn is_clean_false_for_an_edited_committed_file() {
+        let dir = init_repo();
+        let path = dir.path().join("f.py");
+        fs::write(&path, "x = 1\n").unwrap();
+        run(dir.path(), &["add", "f.py"]);
+        run(dir.path(), &["commit", "-q", "-m", "init"]);
+        fs::write(&path, "x = 2\n").unwrap();
+        assert!(!is_clean(dir.path(), Path::new("f.py")).unwrap());
+    }
+
+    #[test]
+    fn is_clean_false_for_a_staged_but_uncommitted_edit() {
+        let dir = init_repo();
+        let path = dir.path().join("f.py");
+        fs::write(&path, "x = 1\n").unwrap();
+        run(dir.path(), &["add", "f.py"]);
+        run(dir.path(), &["commit", "-q", "-m", "init"]);
+        fs::write(&path, "x = 2\n").unwrap();
+        run(dir.path(), &["add", "f.py"]);
+        assert!(!is_clean(dir.path(), Path::new("f.py")).unwrap());
+    }
+
+    #[test]
+    fn is_clean_false_for_a_file_never_committed() {
+        let dir = init_repo();
+        fs::write(dir.path().join("f.py"), "x = 1\n").unwrap();
+        assert!(!is_clean(dir.path(), Path::new("f.py")).unwrap());
     }
 }

@@ -198,15 +198,79 @@ where `kills.json` is `{"tests": {"<test id>": ["<mutant id>", ...]}}` — a
 test-to-killed-mutants map, i.e. a mutation-testing kill matrix with the
 tests attributed per mutant, not just an overall survive/kill count.
 
-**No producer for this exists yet.** mutmut only records whether a mutant
+`dupdup mutate` produces `kills.json`. mutmut only records whether a mutant
 was killed at all, not which test did it — its own maintainers flag this
 gap (`# TODO: we should be able to get information on which tests killed
 mutants ... those that kill zero mutants are redundant!` in
-`mutmut/__main__.py`). This loader defines the input contract so the
-redundancy engine already has a consumer once a collector exists (either an
-upstream mutmut feature, or a small pytest-cov-context-per-mutant-run
-collector built alongside dupdup) — analyzing coverage alone doesn't need
-it.
+`mutmut/__main__.py`) — so this is a self-contained collector, not a wrapper
+around mutmut:
+
+```bash
+COVERAGE_CORE=ctrace python -m pytest --cov=mypkg --cov-context=test
+python -m coverage json --show-contexts -o coverage.json
+dupdup mutate mypkg/checkout.py mypkg/pricing.py --coverage-json coverage.json > kills.json
+dupdup analyze --kill-matrix-json kills.json
+```
+
+Mutants come from walking the same tree-sitter AST `static_lint` uses over
+each `--source` file (application code, not test files — spelled exactly
+as it appears as a key in `coverage.json`'s own `files` map), applying a
+small, fixed set of point mutations: comparison-operator flips
+(`==`↔`!=`, `<`↔`>=`, ...; a chained comparison like `a < b < c` is
+skipped rather than guessing which operator to flip), `and`↔`or`,
+arithmetic-operator flips (`+`↔`-`, `*`↔`/`), boolean-literal flips, and
+incrementing a plain base-10 integer literal by one (a hex/octal/binary or
+underscore-grouped literal is skipped rather than mutated with a guess at
+its meaning). Each is one specific replacement, never "try every
+alternative" — this keeps the mutant count, and so the number of test
+runs, bounded and predictable rather than combinatorial.
+
+For each mutant, only the tests the coverage report says cover its
+enclosing statement are run — not the whole suite — which is what makes a
+from-scratch collector tractable at all instead of reimplementing
+coverage.py's own line tracing. A mutant whose enclosing statement has no
+covering test at all is reported separately as "no coverage", never
+folded into "survived": those are different claims about the data, and
+conflating them would understate a test's value and could feed a false
+redundancy finding back into `analyze`. Every candidate test id the
+coverage report names is confirmed to actually resolve under pytest
+before any file is touched, so a coverage report that's gone stale
+relative to the current test suite fails loudly up front rather than
+silently mis-crediting a kill mid-run.
+
+Mutating real source in place is inherently risky if the process is
+killed mid-run, so `mutate` refuses to start unless every `--source` file
+is clean in git first (its on-disk content matches `HEAD` exactly — commit
+or stash first), and keeps an on-disk `<file>.dupdup-orig` backup for the
+duration of each file's mutants, deleted only once that file's run
+finishes normally. A leftover backup from an interrupted prior run blocks
+a new run on that file until it's been inspected and cleared by hand.
+
+A mutant that hangs the process it's applied to (e.g. weakening a loop
+bound) is killed after `--timeout-secs` (default 30) with no way to tell
+"slow" from "infinite" from the outside. Timing out alone, isolated from
+every other candidate, counts as a kill — the hang itself is exactly the
+behavioral difference the mutant was meant to expose, and it's
+unambiguously that one test's doing. A whole-batch timeout is not drilled
+down into per-candidate runs to find out which one hung, since that would
+cost up to one more full timeout per candidate for every slow mutant; it's
+reported as inconclusive and excluded, same as a batch that fails without
+any single candidate reproducing the failure alone (a sign of test-order
+coupling, not a clean per-test result).
+
+This runs strictly sequentially — one file, one mutant, one test run at a
+time — so it's slow on a large `--source` set; scope it to the modules you
+actually want mutation coverage of, not a whole codebase at once.
+
+Verified end to end against a small real project: mutating a module with
+5 comparison/arithmetic/boolean/boundary mutants plus 2 in genuinely
+untested branches produced exactly 5 kills, correctly attributed
+per-test (including one mutant killed by 3 different tests, confirmed via
+the batch-then-drill-down attribution), and exactly 2 "no coverage"
+results matching coverage.py's own uncovered-line count — not 7
+survivors, which is what a line-granularity (rather than
+enclosing-statement) candidate lookup produced before that bug was found
+and fixed.
 
 ## Why two tiers, not one
 
@@ -248,8 +312,13 @@ every commit, run `analyze` in CI against a real coverage/mutation run.
   statements that check different things is exactly the failure mode found
   calibrating against a real suite; this is the concrete next step for it,
   not yet built or scoped in detail.
-- A kill-matrix collector, once the mutation-tier producer question above is
-  resolved.
+- More mutation operators for `dupdup mutate` (`not` deletion, more
+  arithmetic/bitwise operators, string/collection literal mutations) —
+  deliberately left out of the initial fixed set rather than trying to
+  match a general-purpose mutation tool's full operator catalog.
+- Parallel mutant execution for `dupdup mutate` — it runs strictly
+  sequentially today, which is simple to reason about (only one mutant is
+  ever live on disk) but slow on a large `--source` set.
 
 ## Development
 
