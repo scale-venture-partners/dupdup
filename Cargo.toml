@@ -25,6 +25,7 @@ serde_json = "1"
 toml = "0.8"
 anyhow = "1"
 quick-xml = "0.36"
+gix = { version = "0.87.1", features = ["status"] }
 
 [dev-dependencies]
 tempfile = "3"

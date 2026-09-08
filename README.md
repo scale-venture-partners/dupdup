@@ -70,6 +70,10 @@ explicit path is checked regardless of its name), and never a function
 nested inside another function — pytest doesn't discover those either,
 regardless of name.
 
+`--staged`/`--all` read the repository via [`gix`](https://github.com/GitoxideLabs/gitoxide),
+a pure-Rust git implementation — dupdup never shells out to a `git` binary,
+so it has no runtime dependency on one being installed.
+
 ## `dupdup analyze` — dynamic, requires running the suite
 
 Coverage- and mutation-based redundancy analysis, driven by one shared
