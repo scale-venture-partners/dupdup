@@ -1,0 +1,18 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "dupdup"
+version = "0.1.0"
+description = "Finds duplicative, redundant, and useless tests"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+
+[project.urls]
+Repository = "https://github.com/scale-venture-partners/dupdup"
+
+[tool.maturin]
+bindings = "bin"
+strip = true

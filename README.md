@@ -8,6 +8,30 @@ It has two independent tiers, because the techniques that actually find
 redundant tests split cleanly along one line — whether they need to execute
 the suite:
 
+## Install
+
+With a Rust toolchain, from a checkout:
+
+```bash
+cargo install --path .
+```
+
+That puts `dupdup` in `~/.cargo/bin`, which must be on your `PATH`.
+
+Without Rust: this repo also builds as a Python package via
+[maturin](https://www.maturin.rs)'s `bindings = "bin"` mode, which just
+wraps the compiled binary in a wheel — there's no Python code here, and
+`import dupdup` doesn't work. From a checkout with a Rust toolchain and
+[uv](https://docs.astral.sh/uv/):
+
+```bash
+uvx maturin build --release
+uvx --from target/wheels/dupdup-*.whl dupdup check --all
+```
+
+No package is published yet, so this only works from a local build for now
+— `uvx dupdup` (pulling from an index) isn't available.
+
 ## `dupdup check` — static, no execution
 
 Fast, tree-sitter-based AST rules over Python test files. Pre-commit
@@ -31,7 +55,6 @@ kind and is indistinguishable, to a static rule, from a test that simply
 forgot to assert something.
 
 ```bash
-cargo install --path .
 dupdup init             # write dupdup.toml with defaults
 dupdup check --staged   # check what's about to be committed
 dupdup check --all      # check every git-tracked test file

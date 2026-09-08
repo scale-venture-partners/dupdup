@@ -17,3 +17,5 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets
       - run: cargo test
+      - uses: astral-sh/setup-uv@v10.0.1
+      - run: uvx maturin build --release
