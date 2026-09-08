@@ -106,7 +106,10 @@ a real ~2000-test production suite found that essentially every cross-file
 pairing was two tests from unrelated feature areas that happened to share
 coverage of common infrastructure (middleware, logging, a shared client) —
 not genuine redundancy. Acting on those findings would have meant deleting
-the only direct test of whichever behavior got flagged as "subsumed."
+the only direct test of whichever behavior got flagged as "subsumed." This
+scoping cut total findings by 80% on that suite (17,115 → 3,340) and made
+the tool noticeably faster, since same-file filtering skips most pairs
+before any bitset comparison runs.
 
 **These relations are computed per test independently.** If two tests each
 happen to be reproducible by the rest of the suite, that does not mean both
@@ -116,21 +119,40 @@ a jointly minimal safe-to-remove set is a harder (NP-complete in general)
 set-cover problem that dupdup doesn't attempt. Treat findings as leads to
 review, not a script to run.
 
-**Known limitation: same-file boundary-condition tests still false-positive
-as duplicates.** A function that loops over sorted thresholds and returns
-through the same two lines regardless of which one matched (`derive_tier`,
-say) makes every one of its boundary tests — one per threshold, each
-checking a different, meaningful outcome — show up with identical line
-coverage. Same-file scoping doesn't help here, since these tests *are* in
-the same file. Fixing this needs per-branch dynamic-context data; `coverage
-json --show-contexts`'s report format doesn't expose that even with branch
-coverage turned on (confirmed empirically: its per-line `contexts` map
-doesn't vary by which branch a line's context took — only the raw SQLite
-`.coverage` file's internal, schema-versioned `arc` table has it, which
-this loader deliberately doesn't parse). Until that's solved, treat any
-`DUPLICATE_COVERAGE`/`SUBSUMED_COVERAGE` finding between same-file tests
-with very similar names (boundary/edge-case siblings) with extra
-skepticism.
+**Known limitation, still open after same-file scoping: the coverage
+source's precision, not just its volume, is limited by what line coverage
+can see.** Re-verifying after the same-file fix, a random sample of new
+findings was still ~6/7 false positives — same-file scoping removed the
+most dangerous failure mode (cross-feature-area false positives) but not
+the underlying one: **line coverage has no visibility into what a test
+asserted, only what code ran.** Concretely, on that same real suite:
+
+- Two tests calling the same low-branching function with *different*
+  assertions about its result show identical coverage — not just
+  loop/boundary-condition functions like the `derive_tier` example above,
+  but any function most of whose logic isn't conditional on the input two
+  tests happen to differ on.
+- Two tests sharing setup/constructor code, where a "small" test only
+  exercises that shared baseline and a "big" test exercises it plus more,
+  look like subset/superset even when they're testing unrelated things —
+  the same shape as the fixed cross-file case, just within one file.
+  Same-file scoping was necessary but wasn't sufficient to catch this.
+- A success-path test and its `pytest.raises(...)` failure-path sibling for
+  Pydantic-v2-validated input showed identical coverage, because the actual
+  branching happens inside pydantic-core's compiled Rust validator —
+  invisible to Python line tracing. This is the same root cause as a
+  compiled-extension test touching no traceable line at all (see the
+  `--junit-xml` section below); here it just doesn't fully vanish, it goes
+  invisible to *which* lines varied instead.
+
+None of this is fixable by tightening the scoping further — it needs either
+per-branch dynamic-context data (see the SQLite-schema tradeoff below,
+still unresolved) or cross-checking the tool's own static-tier AST parsing
+of each test's actual assert statements before trusting a coverage-based
+relation, which isn't built yet. Treat every `DUPLICATE_COVERAGE`/
+`SUBSUMED_COVERAGE`/`CONTRIBUTES_NOTHING_UNIQUE` finding as a lead to
+manually check against the real test bodies, not a result to act on
+directly.
 
 ### Coverage source
 
@@ -205,11 +227,19 @@ every commit, run `analyze` in CI against a real coverage/mutation run.
   calibrating against a real suite (see above), still unresolved because a
   safe heuristic (e.g. requiring a `side_effect=`-injecting `patch(...)` in
   scope) hasn't been validated against enough real cases yet.
-- Per-branch dynamic-context data for the coverage source, to catch
-  same-file boundary-condition tests that collapse to identical line
-  coverage (see the known limitation above) — needs a real design decision
-  about whether that means parsing `coverage.py`'s internal SQLite schema
-  directly, since the public JSON report format doesn't expose it.
+- Per-branch dynamic-context data for the coverage source (see the known
+  limitation above) — needs a real design decision about whether that means
+  parsing `coverage.py`'s internal SQLite schema directly, since the public
+  JSON report format doesn't expose it even with branch coverage on
+  (confirmed empirically).
+- Cross-checking a coverage-based finding against the static tier's own AST
+  parsing of both tests' assert statements before reporting it — `analyze`
+  already has each flagged test's file path for free (it's the pytest node
+  id), so this reuses `static_lint`'s existing parser rather than adding a
+  new one. Two same-file tests with identical coverage but assert
+  statements that check different things is exactly the failure mode found
+  calibrating against a real suite; this is the concrete next step for it,
+  not yet built or scoped in detail.
 - A kill-matrix collector, once the mutation-tier producer question above is
   resolved.
 
