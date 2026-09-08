@@ -47,7 +47,9 @@ enum Commands {
         /// Cross-checked against the test count coverage-json actually
         /// recorded contexts for, so a run missing context data for tests
         /// that genuinely ran fails loudly instead of analyzing partial
-        /// data. Pass --allow-incomplete-context to proceed anyway.
+        /// data. A shortfall is often benign on a large real suite (tests
+        /// that touch no traceable line), not a broken coverage run — pass
+        /// --allow-incomplete-context once you've confirmed that's the case.
         #[arg(long)]
         junit_xml: Option<PathBuf>,
         /// Proceed even if --junit-xml finds tests with no coverage-context

@@ -64,7 +64,8 @@ pub fn base_test_name(test_id: &str) -> &str {
 
 /// The file a pytest node id belongs to (everything before the first
 /// `::`). `DuplicateCoverage`/`SubsumedCoverage`/`ContributesNothingUnique`
-/// only ever compare tests in the same file: calibrating against a real
+/// only ever compare tests in the same file when both ids look like pytest
+/// node ids (see `comparable`): calibrating against a real
 /// ~2000-test suite found that essentially every cross-file pairing was
 /// two tests from unrelated feature areas that happened to share coverage
 /// of common infrastructure (middleware, logging, a shared client) — not
@@ -90,8 +91,22 @@ fn is_subset(a: &FixedBitSet, b: &FixedBitSet) -> bool {
     diff.count_ones(..) == 0
 }
 
+/// Whether two test ids are eligible to be compared against each other at
+/// all: never the same base test (parametrize siblings), and — only when
+/// both ids are actual pytest node ids (contain `::`) — the same file. A
+/// mutation-source kill matrix isn't guaranteed to key by pytest node id
+/// (the format documented in `dynamic::killmatrix` is an opaque `<test
+/// id>` string); same-file scoping is a pytest-specific policy, so an id
+/// set that doesn't look like pytest node ids falls back to comparing
+/// every pair rather than silently scoping every pair out.
 fn comparable(a: &str, b: &str) -> bool {
-    base_test_name(a) != base_test_name(b) && test_file(a) == test_file(b)
+    if base_test_name(a) == base_test_name(b) {
+        return false;
+    }
+    match (a.find("::"), b.find("::")) {
+        (Some(_), Some(_)) => test_file(a) == test_file(b),
+        _ => true,
+    }
 }
 
 /// Finds redundancy relations among `tests`. All of `tests` must share one
@@ -372,6 +387,27 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].kind, RedundancyKind::CoversNothing);
         assert_eq!(findings[0].test_id, "f.py::test_zero");
+    }
+
+    #[test]
+    fn bare_ids_without_a_pytest_node_id_shape_are_not_file_scoped() {
+        // A kill-matrix producer isn't guaranteed to key by pytest node id
+        // (see `dynamic::killmatrix`'s documented `<test id>` contract) — a
+        // bare id like "test_a" has no "::" to scope by, so same-file
+        // scoping must not silently zero out every relation for this shape.
+        let tests = vec![
+            TestCoverage {
+                test_id: "test_a".into(),
+                bits: bits(&[1, 2], 5),
+            },
+            TestCoverage {
+                test_id: "test_b".into(),
+                bits: bits(&[1, 2], 5),
+            },
+        ];
+        let findings = analyze(&tests);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].kind, RedundancyKind::DuplicateCoverage);
     }
 
     #[test]

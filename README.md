@@ -101,7 +101,11 @@ That exemption is scoped to the sibling pair itself: `test_foo[1]` can
 still be flagged against an unrelated test, e.g. `test_bar`.
 
 `DUPLICATE_COVERAGE`, `SUBSUMED_COVERAGE`, and `CONTRIBUTES_NOTHING_UNIQUE`
-only ever compare two tests in the **same test file**. Calibrating against
+only ever compare two tests in the **same test file**, when both test ids
+are actual pytest node ids (contain `::`) — the mutation source's kill
+matrix isn't guaranteed to key by pytest node id, so an id set that doesn't
+look like one falls back to comparing every pair rather than this scoping
+silently zeroing out every relation. Calibrating against
 a real ~2000-test production suite found that essentially every cross-file
 pairing was two tests from unrelated feature areas that happened to share
 coverage of common infrastructure (middleware, logging, a shared client) —
