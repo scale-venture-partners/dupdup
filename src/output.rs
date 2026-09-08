@@ -34,6 +34,7 @@ fn kind_label(kind: RedundancyKind) -> &'static str {
         RedundancyKind::DuplicateCoverage => "DUPLICATE_COVERAGE",
         RedundancyKind::SubsumedCoverage => "SUBSUMED_COVERAGE",
         RedundancyKind::ContributesNothingUnique => "CONTRIBUTES_NOTHING_UNIQUE",
+        RedundancyKind::CoversNothing => "COVERS_NOTHING",
     }
 }
 

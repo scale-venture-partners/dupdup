@@ -21,6 +21,10 @@ pub enum RedundancyKind {
     /// Every requirement this test covers is also covered by the union of
     /// every other test — removing it would shrink nothing.
     ContributesNothingUnique,
+    /// Covers zero requirements (zero lines for the coverage source, zero
+    /// killed mutants for the mutation source) — vacuously a subset of
+    /// every other test, so reported once instead of once per peer.
+    CoversNothing,
 }
 
 #[derive(Debug, Serialize)]
@@ -52,7 +56,21 @@ pub fn analyze(tests: &[TestCoverage]) -> Vec<RedundancyFinding> {
     let mut findings = Vec::new();
     let mut explained: HashSet<usize> = HashSet::new();
 
+    for (i, test) in tests.iter().enumerate() {
+        if test.bits.count_ones(..) == 0 {
+            explained.insert(i);
+            findings.push(RedundancyFinding {
+                kind: RedundancyKind::CoversNothing,
+                test_id: test.test_id.clone(),
+                related: Vec::new(),
+            });
+        }
+    }
+
     for i in 0..n {
+        if explained.contains(&i) {
+            continue;
+        }
         for j in 0..n {
             if i == j {
                 continue;
@@ -198,5 +216,18 @@ mod tests {
         assert!(findings
             .iter()
             .any(|f| f.test_id == "test_b" && f.kind == RedundancyKind::SubsumedCoverage));
+    }
+
+    #[test]
+    fn covers_nothing_is_reported_once_not_once_per_peer() {
+        let tests = vec![
+            TestCoverage { test_id: "test_zero".into(), bits: bits(&[], 5) },
+            TestCoverage { test_id: "test_a".into(), bits: bits(&[1, 2], 5) },
+            TestCoverage { test_id: "test_b".into(), bits: bits(&[3, 4], 5) },
+        ];
+        let findings = analyze(&tests);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].kind, RedundancyKind::CoversNothing);
+        assert_eq!(findings[0].test_id, "test_zero");
     }
 }

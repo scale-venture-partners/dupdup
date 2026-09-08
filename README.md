@@ -44,8 +44,15 @@ requirement is a covered source line for the coverage source, or a killed
 mutant id for the mutation source — the two are never mixed into one
 analysis, since a bit position means something different in each space.
 
-Three relations, per source:
+Four relations, per source:
 
+- `COVERS_NOTHING` — a test covers zero requirements (zero lines for the
+  coverage source, zero killed mutants for the mutation source). For the
+  mutation source this is the single most actionable finding: a test that
+  kills no mutant at all is redundant regardless of what else is in the
+  suite. Reported once, not once per other test — an empty set is trivially
+  a "subset" of everything, so without this check it would otherwise show
+  up as a flood of `SUBSUMED_COVERAGE` findings against every peer.
 - `DUPLICATE_COVERAGE` — two tests cover exactly the same requirements.
 - `SUBSUMED_COVERAGE` — a test's coverage is a strict subset of another
   single test's.
@@ -54,8 +61,10 @@ Three relations, per source:
   it alone (the "god test" case, in reverse).
 
 Tests that only differ by a pytest `parametrize` id (`test_foo[1]` vs.
-`test_foo[2]`) are exempted from all three relations against each other —
+`test_foo[2]`) are exempted from these relations against each other —
 sharing coverage is the point of parametrizing, not evidence of redundancy.
+That exemption is scoped to the sibling pair itself: `test_foo[1]` can
+still be flagged against an unrelated test, e.g. `test_bar`.
 
 **These relations are computed per test independently.** If two tests each
 happen to be reproducible by the rest of the suite, that does not mean both
