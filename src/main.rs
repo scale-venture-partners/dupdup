@@ -64,17 +64,29 @@ enum Commands {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Check { paths, staged, all, json, config } => {
-            run_check(paths, staged, all, json, &config)
-        }
-        Commands::Analyze { coverage_json, junit_xml, kill_matrix_json, json } => {
-            run_analyze(coverage_json, junit_xml, kill_matrix_json, json)
-        }
+        Commands::Check {
+            paths,
+            staged,
+            all,
+            json,
+            config,
+        } => run_check(&paths, staged, all, json, &config),
+        Commands::Analyze {
+            coverage_json,
+            junit_xml,
+            kill_matrix_json,
+            json,
+        } => run_analyze(
+            coverage_json.as_deref(),
+            junit_xml.as_deref(),
+            kill_matrix_json.as_deref(),
+            json,
+        ),
         Commands::Init => run_init(),
     }
 }
 
-const DEFAULT_CONFIG_TEMPLATE: &str = r#"[dupdup]
+const DEFAULT_CONFIG_TEMPLATE: &str = r"[dupdup]
 # Glob patterns (relative to repo root) to skip entirely.
 exclude = []
 
@@ -86,7 +98,7 @@ enabled = true
 
 [dupdup.tautological_assert]
 enabled = true
-"#;
+";
 
 fn run_init() -> anyhow::Result<()> {
     let path = PathBuf::from("dupdup.toml");
@@ -100,7 +112,9 @@ fn run_init() -> anyhow::Result<()> {
 
 fn is_python_test_file(path: &Path) -> bool {
     match path.file_name().and_then(|n| n.to_str()) {
-        Some(name) => name.ends_with(".py") && (name.starts_with("test_") || name.ends_with("_test.py")),
+        Some(name) => {
+            name.ends_with(".py") && (name.starts_with("test_") || name.ends_with("_test.py"))
+        }
         None => false,
     }
 }
@@ -136,13 +150,16 @@ fn is_excluded(path: &Path, patterns: &[Regex]) -> bool {
 }
 
 fn run_check(
-    paths: Vec<PathBuf>,
+    paths: &[PathBuf],
     staged: bool,
     all: bool,
     json: bool,
     config_path: &Path,
 ) -> anyhow::Result<()> {
-    let modes = [!paths.is_empty(), staged, all].iter().filter(|b| **b).count();
+    let modes = [!paths.is_empty(), staged, all]
+        .iter()
+        .filter(|b| **b)
+        .count();
     if modes == 0 {
         anyhow::bail!("specify one of: explicit paths, --staged, or --all");
     }
@@ -154,21 +171,14 @@ fn run_check(
     let exclude_patterns = compile_globs(&config.exclude)?;
     let mut violations = Vec::new();
 
-    if !paths.is_empty() {
-        // An explicit path is checked regardless of pytest's test-file naming
-        // convention — the caller named it, so it's in scope. That
-        // convention only gates which files --staged/--all bother to parse.
-        for path in &paths {
-            if is_excluded(path, &exclude_patterns) {
-                continue;
-            }
-            let source = std::fs::read_to_string(path)?;
-            violations.extend(static_lint::check_file(&path.to_string_lossy(), &source, &config)?);
-        }
-    } else {
+    if paths.is_empty() {
         let cwd = std::env::current_dir()?;
         let root = git::repo_root(&cwd)?;
-        let files = if staged { git::staged_files(&root)? } else { git::all_files(&root)? };
+        let files = if staged {
+            git::staged_files(&root)?
+        } else {
+            git::all_files(&root)?
+        };
         for rel_path in files {
             if !is_python_test_file(&rel_path) || is_excluded(&rel_path, &exclude_patterns) {
                 continue;
@@ -184,7 +194,26 @@ fn run_check(
                     Err(_) => continue,
                 }
             };
-            violations.extend(static_lint::check_file(&rel_path.to_string_lossy(), &source, &config)?);
+            violations.extend(static_lint::check_file(
+                &rel_path.to_string_lossy(),
+                &source,
+                &config,
+            )?);
+        }
+    } else {
+        // An explicit path is checked regardless of pytest's test-file naming
+        // convention — the caller named it, so it's in scope. That
+        // convention only gates which files --staged/--all bother to parse.
+        for path in paths {
+            if is_excluded(path, &exclude_patterns) {
+                continue;
+            }
+            let source = std::fs::read_to_string(path)?;
+            violations.extend(static_lint::check_file(
+                &path.to_string_lossy(),
+                &source,
+                &config,
+            )?);
         }
     }
 
@@ -205,10 +234,7 @@ fn run_check(
 /// count of tests that actually executed their body (passed + failed,
 /// excluding skipped/errored) so a shortfall against the coverage-json
 /// context count is caught here instead of analyzing incomplete data.
-fn check_context_completeness(
-    found_test_count: usize,
-    junit_path: &Path,
-) -> anyhow::Result<()> {
+fn check_context_completeness(found_test_count: usize, junit_path: &Path) -> anyhow::Result<()> {
     let summary = dynamic::junit::load(junit_path)?;
     if found_test_count < summary.ran {
         anyhow::bail!(
@@ -227,16 +253,16 @@ fn check_context_completeness(
 }
 
 fn run_analyze(
-    coverage_json: Option<PathBuf>,
-    junit_xml: Option<PathBuf>,
-    kill_matrix_json: Option<PathBuf>,
+    coverage_json: Option<&Path>,
+    junit_xml: Option<&Path>,
+    kill_matrix_json: Option<&Path>,
     json: bool,
 ) -> anyhow::Result<()> {
     let mut reports = Vec::new();
 
-    if let Some(cov_path) = &coverage_json {
+    if let Some(cov_path) = coverage_json {
         let loaded = dynamic::coverage::load(cov_path)?;
-        match &junit_xml {
+        match junit_xml {
             Some(junit_path) => check_context_completeness(loaded.tests.len(), junit_path)?,
             None => eprintln!(
                 "warning: no --junit-xml given — a run with silently-dropped dynamic contexts \
@@ -249,7 +275,7 @@ fn run_analyze(
         });
     }
 
-    if let Some(km_path) = &kill_matrix_json {
+    if let Some(km_path) = kill_matrix_json {
         let loaded = dynamic::killmatrix::load(km_path)?;
         reports.push(AnalyzeReport {
             source: "mutation",
@@ -267,4 +293,38 @@ fn run_analyze(
         output::print_analyze_human(&reports);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_python_test_file_matches_pytest_naming_convention() {
+        assert!(is_python_test_file(Path::new("test_foo.py")));
+        assert!(is_python_test_file(Path::new("foo_test.py")));
+        assert!(is_python_test_file(Path::new("dir/test_foo.py")));
+        assert!(!is_python_test_file(Path::new("foo.py")));
+        assert!(!is_python_test_file(Path::new("test_foo.txt")));
+        assert!(!is_python_test_file(Path::new("conftest.py")));
+    }
+
+    #[test]
+    fn glob_to_regex_translates_star_and_escapes_dots() {
+        assert_eq!(glob_to_regex("vendor/*"), r"^vendor/.*$");
+        assert_eq!(glob_to_regex("a.b"), r"^a\.b$");
+    }
+
+    #[test]
+    fn is_excluded_matches_a_compiled_glob() {
+        let patterns = compile_globs(&["vendor/*".to_string()]).unwrap();
+        assert!(is_excluded(Path::new("vendor/thing.py"), &patterns));
+        assert!(!is_excluded(Path::new("src/thing.py"), &patterns));
+    }
+
+    #[test]
+    fn is_excluded_with_no_patterns_excludes_nothing() {
+        let patterns = compile_globs(&[]).unwrap();
+        assert!(!is_excluded(Path::new("anything.py"), &patterns));
+    }
 }

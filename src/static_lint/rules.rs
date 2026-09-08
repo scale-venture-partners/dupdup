@@ -25,13 +25,13 @@ fn normalize(text: &str) -> String {
 /// `assert_statement` nodes anywhere in `fn_node`'s body, except inside a
 /// nested `def` — a helper defined inside a test has its own assertion
 /// surface, distinct from the test's.
-fn assert_statements<'a>(fn_node: Node<'a>) -> Vec<Node<'a>> {
+fn assert_statements(fn_node: Node<'_>) -> Vec<Node<'_>> {
     let mut out = Vec::new();
     collect_excluding_nested_defs(fn_node, "assert_statement", true, &mut out);
     out
 }
 
-fn with_statements<'a>(fn_node: Node<'a>) -> Vec<Node<'a>> {
+fn with_statements(fn_node: Node<'_>) -> Vec<Node<'_>> {
     let mut out = Vec::new();
     collect_excluding_nested_defs(fn_node, "with_statement", true, &mut out);
     out
@@ -41,7 +41,7 @@ fn with_statements<'a>(fn_node: Node<'a>) -> Vec<Node<'a>> {
 /// inside a nested `def`. Used to compare statements that are direct
 /// siblings — i.e. truly adjacent in the source, with no other statement of
 /// any kind between them, not just no other `assert`.
-fn blocks<'a>(fn_node: Node<'a>) -> Vec<Node<'a>> {
+fn blocks(fn_node: Node<'_>) -> Vec<Node<'_>> {
     let mut out = Vec::new();
     collect_excluding_nested_defs(fn_node, "block", true, &mut out);
     out
@@ -68,11 +68,11 @@ fn has_assertion_method_call(fn_node: Node, source: &[u8]) -> bool {
         };
         name_node
             .and_then(|n| n.utf8_text(source).ok())
-            .map(|name| {
+            .is_some_and(|name| {
                 let trimmed = name.trim_start_matches('_');
-                (trimmed.starts_with("assert") && trimmed.len() > "assert".len()) || trimmed == "fail"
+                (trimmed.starts_with("assert") && trimmed.len() > "assert".len())
+                    || trimmed == "fail"
             })
-            .unwrap_or(false)
     })
 }
 
@@ -87,8 +87,7 @@ fn has_pytest_skip_call(fn_node: Node, source: &[u8]) -> bool {
             .filter(|f| f.kind() == "attribute")
             .and_then(|f| f.child_by_field_name("attribute"))
             .and_then(|attr| attr.utf8_text(source).ok())
-            .map(|name| name == "skip")
-            .unwrap_or(false)
+            .is_some_and(|name| name == "skip")
     })
 }
 
@@ -125,6 +124,7 @@ fn collect_excluding_nested_defs<'a>(
 /// A test with no `assert`, no `mock`/unittest-style `.assert*(...)` call,
 /// and no `pytest.raises`/`assertRaises` context passes no matter what the
 /// code under test does.
+#[must_use]
 pub fn check_no_assertions(fn_node: Node, source: &[u8]) -> Option<Violation> {
     if !assert_statements(fn_node).is_empty() {
         return None;
@@ -156,6 +156,7 @@ pub fn check_no_assertions(fn_node: Node, source: &[u8]) -> Option<Violation> {
 /// normalized) text. The same assertion re-checked after an intervening
 /// statement is usually re-verifying an invariant held across a state
 /// change, not a copy-paste duplicate, so only true adjacency counts.
+#[must_use]
 pub fn check_duplicate_assert(fn_node: Node, source: &[u8]) -> Vec<Violation> {
     let mut out = Vec::new();
     for block in blocks(fn_node) {
@@ -190,6 +191,7 @@ pub fn check_duplicate_assert(fn_node: Node, source: &[u8]) -> Vec<Violation> {
 /// assertion is true independent of the code under test. Operands that
 /// contain a call are excluded: `assert f(x) == f(x)` calls `f` twice and
 /// is testing that `f` is deterministic, not a tautology.
+#[must_use]
 pub fn check_tautological_assert(fn_node: Node, source: &[u8]) -> Vec<Violation> {
     let mut out = Vec::new();
     for a in assert_statements(fn_node) {

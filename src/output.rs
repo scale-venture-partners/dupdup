@@ -13,7 +13,10 @@ pub fn print_check_human(violations: &[Violation]) {
             v.file, v.line, sev, v.rule, v.message, v.test_name
         );
     }
-    let errors = violations.iter().filter(|v| v.severity == Severity::Error).count();
+    let errors = violations
+        .iter()
+        .filter(|v| v.severity == Severity::Error)
+        .count();
     let warnings = violations.len() - errors;
     println!();
     println!(
@@ -56,7 +59,12 @@ pub fn print_analyze_human(reports: &[AnalyzeReport]) {
             if f.related.is_empty() {
                 println!("{}  {}", kind_label(f.kind), f.test_id);
             } else {
-                println!("{}  {}  (vs {})", kind_label(f.kind), f.test_id, f.related.join(", "));
+                println!(
+                    "{}  {}  (vs {})",
+                    kind_label(f.kind),
+                    f.test_id,
+                    f.related.join(", ")
+                );
             }
         }
         total += report.findings.len();

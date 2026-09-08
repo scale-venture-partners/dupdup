@@ -38,6 +38,7 @@ pub struct RedundancyFinding {
 /// family are expected to share most or all coverage — that's the point of
 /// parametrizing — so they're excluded from the duplicate/subsumed relations
 /// below and left to the static tier's clone-detection rule instead.
+#[must_use]
 pub fn base_test_name(test_id: &str) -> &str {
     match test_id.find('[') {
         Some(idx) => &test_id[..idx],
@@ -51,6 +52,7 @@ fn is_subset(a: &FixedBitSet, b: &FixedBitSet) -> bool {
     diff.count_ones(..) == 0
 }
 
+#[must_use]
 pub fn analyze(tests: &[TestCoverage]) -> Vec<RedundancyFinding> {
     let n = tests.len();
     let mut findings = Vec::new();
@@ -136,8 +138,14 @@ mod tests {
     #[test]
     fn identical_coverage_is_flagged_duplicate() {
         let tests = vec![
-            TestCoverage { test_id: "test_a".into(), bits: bits(&[1, 2], 5) },
-            TestCoverage { test_id: "test_b".into(), bits: bits(&[1, 2], 5) },
+            TestCoverage {
+                test_id: "test_a".into(),
+                bits: bits(&[1, 2], 5),
+            },
+            TestCoverage {
+                test_id: "test_b".into(),
+                bits: bits(&[1, 2], 5),
+            },
         ];
         let findings = analyze(&tests);
         assert_eq!(findings.len(), 1);
@@ -149,8 +157,14 @@ mod tests {
     #[test]
     fn parametrize_siblings_with_identical_coverage_are_not_flagged() {
         let tests = vec![
-            TestCoverage { test_id: "test_a[1]".into(), bits: bits(&[1, 2], 5) },
-            TestCoverage { test_id: "test_a[2]".into(), bits: bits(&[1, 2], 5) },
+            TestCoverage {
+                test_id: "test_a[1]".into(),
+                bits: bits(&[1, 2], 5),
+            },
+            TestCoverage {
+                test_id: "test_a[2]".into(),
+                bits: bits(&[1, 2], 5),
+            },
         ];
         assert!(analyze(&tests).is_empty());
     }
@@ -158,8 +172,14 @@ mod tests {
     #[test]
     fn strict_subset_is_flagged_subsumed() {
         let tests = vec![
-            TestCoverage { test_id: "test_small".into(), bits: bits(&[1], 5) },
-            TestCoverage { test_id: "test_big".into(), bits: bits(&[1, 2, 3], 5) },
+            TestCoverage {
+                test_id: "test_small".into(),
+                bits: bits(&[1], 5),
+            },
+            TestCoverage {
+                test_id: "test_big".into(),
+                bits: bits(&[1, 2, 3], 5),
+            },
         ];
         let findings = analyze(&tests);
         assert_eq!(findings.len(), 1);
@@ -171,8 +191,14 @@ mod tests {
     #[test]
     fn unique_coverage_is_not_flagged() {
         let tests = vec![
-            TestCoverage { test_id: "test_a".into(), bits: bits(&[1], 5) },
-            TestCoverage { test_id: "test_b".into(), bits: bits(&[2], 5) },
+            TestCoverage {
+                test_id: "test_a".into(),
+                bits: bits(&[1], 5),
+            },
+            TestCoverage {
+                test_id: "test_b".into(),
+                bits: bits(&[2], 5),
+            },
         ];
         assert!(analyze(&tests).is_empty());
     }
@@ -184,9 +210,18 @@ mod tests {
         // test_wide's coverage is fully contained in the union of the
         // other two, isolating this relation from pairwise SubsumedCoverage.
         let tests = vec![
-            TestCoverage { test_id: "test_wide".into(), bits: bits(&[1, 2], 12) },
-            TestCoverage { test_id: "test_a".into(), bits: bits(&[1, 3, 10], 12) },
-            TestCoverage { test_id: "test_b".into(), bits: bits(&[2, 3, 11], 12) },
+            TestCoverage {
+                test_id: "test_wide".into(),
+                bits: bits(&[1, 2], 12),
+            },
+            TestCoverage {
+                test_id: "test_a".into(),
+                bits: bits(&[1, 3, 10], 12),
+            },
+            TestCoverage {
+                test_id: "test_b".into(),
+                bits: bits(&[2, 3, 11], 12),
+            },
         ];
         let findings = analyze(&tests);
         assert_eq!(findings.len(), 1);
@@ -201,15 +236,24 @@ mod tests {
         // the others, and test_a/test_b are each redundant against wide
         // alone. Both are legitimate, independently actionable findings.
         let tests = vec![
-            TestCoverage { test_id: "test_wide".into(), bits: bits(&[1, 2], 5) },
-            TestCoverage { test_id: "test_a".into(), bits: bits(&[1], 5) },
-            TestCoverage { test_id: "test_b".into(), bits: bits(&[2], 5) },
+            TestCoverage {
+                test_id: "test_wide".into(),
+                bits: bits(&[1, 2], 5),
+            },
+            TestCoverage {
+                test_id: "test_a".into(),
+                bits: bits(&[1], 5),
+            },
+            TestCoverage {
+                test_id: "test_b".into(),
+                bits: bits(&[2], 5),
+            },
         ];
         let findings = analyze(&tests);
         assert_eq!(findings.len(), 3);
-        assert!(findings
-            .iter()
-            .any(|f| f.test_id == "test_wide" && f.kind == RedundancyKind::ContributesNothingUnique));
+        assert!(findings.iter().any(
+            |f| f.test_id == "test_wide" && f.kind == RedundancyKind::ContributesNothingUnique
+        ));
         assert!(findings
             .iter()
             .any(|f| f.test_id == "test_a" && f.kind == RedundancyKind::SubsumedCoverage));
@@ -221,9 +265,18 @@ mod tests {
     #[test]
     fn covers_nothing_is_reported_once_not_once_per_peer() {
         let tests = vec![
-            TestCoverage { test_id: "test_zero".into(), bits: bits(&[], 5) },
-            TestCoverage { test_id: "test_a".into(), bits: bits(&[1, 2], 5) },
-            TestCoverage { test_id: "test_b".into(), bits: bits(&[3, 4], 5) },
+            TestCoverage {
+                test_id: "test_zero".into(),
+                bits: bits(&[], 5),
+            },
+            TestCoverage {
+                test_id: "test_a".into(),
+                bits: bits(&[1, 2], 5),
+            },
+            TestCoverage {
+                test_id: "test_b".into(),
+                bits: bits(&[3, 4], 5),
+            },
         ];
         let findings = analyze(&tests);
         assert_eq!(findings.len(), 1);

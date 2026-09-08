@@ -94,7 +94,11 @@ mod tests {
         let summary = parse(xml).unwrap();
         assert_eq!(
             summary,
-            JunitSummary { ran: 2, skipped: 1, errored: 1 }
+            JunitSummary {
+                ran: 2,
+                skipped: 1,
+                errored: 1
+            }
         );
     }
 }

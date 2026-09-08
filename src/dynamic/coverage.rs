@@ -54,7 +54,10 @@ pub fn load(path: &Path) -> anyhow::Result<LoadedCoverage> {
             });
             for context in contexts {
                 if let Some(test_id) = context_test_id(context) {
-                    per_test.entry(test_id.to_string()).or_default().push(req_idx);
+                    per_test
+                        .entry(test_id.to_string())
+                        .or_default()
+                        .push(req_idx);
                 }
             }
         }
@@ -114,14 +117,15 @@ mod tests {
             by_id["test_mod.py::test_add"],
             by_id["test_mod.py::test_add_dup"]
         );
-        assert_ne!(by_id["test_mod.py::test_add"], by_id["test_mod.py::test_sub"]);
+        assert_ne!(
+            by_id["test_mod.py::test_add"],
+            by_id["test_mod.py::test_sub"]
+        );
     }
 
     #[test]
     fn empty_context_is_not_a_test() {
-        let f = write_report(
-            r#"{"files": {"pkg/mod.py": {"contexts": {"1": [""]}}}}"#,
-        );
+        let f = write_report(r#"{"files": {"pkg/mod.py": {"contexts": {"1": [""]}}}}"#);
         let loaded = load(f.path()).unwrap();
         assert!(loaded.tests.is_empty());
     }

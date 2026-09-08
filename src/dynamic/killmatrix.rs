@@ -39,7 +39,10 @@ pub fn load(path: &Path) -> anyhow::Result<LoadedKillMatrix> {
             for mutant_id in &report.tests[id] {
                 bits.set(mutant_index[mutant_id], true);
             }
-            TestCoverage { test_id: id.clone(), bits }
+            TestCoverage {
+                test_id: id.clone(),
+                bits,
+            }
         })
         .collect();
 

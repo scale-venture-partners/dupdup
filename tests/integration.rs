@@ -12,11 +12,23 @@ fn flags_no_assertions_duplicate_assert_and_tautological_assert() {
     let violations = violations_for(source);
 
     let rules: Vec<&str> = violations.iter().map(|v| v.rule).collect();
-    assert!(rules.contains(&"NO_ASSERTIONS"), "expected NO_ASSERTIONS, got {rules:?}");
-    assert!(rules.contains(&"DUPLICATE_ASSERT"), "expected DUPLICATE_ASSERT, got {rules:?}");
-    assert!(rules.contains(&"TAUTOLOGICAL_ASSERT"), "expected TAUTOLOGICAL_ASSERT, got {rules:?}");
+    assert!(
+        rules.contains(&"NO_ASSERTIONS"),
+        "expected NO_ASSERTIONS, got {rules:?}"
+    );
+    assert!(
+        rules.contains(&"DUPLICATE_ASSERT"),
+        "expected DUPLICATE_ASSERT, got {rules:?}"
+    );
+    assert!(
+        rules.contains(&"TAUTOLOGICAL_ASSERT"),
+        "expected TAUTOLOGICAL_ASSERT, got {rules:?}"
+    );
 
-    let no_assertions = violations.iter().find(|v| v.rule == "NO_ASSERTIONS").unwrap();
+    let no_assertions = violations
+        .iter()
+        .find(|v| v.rule == "NO_ASSERTIONS")
+        .unwrap();
     assert_eq!(no_assertions.test_name, "test_never_fails");
 }
 

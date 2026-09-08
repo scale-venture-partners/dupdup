@@ -66,3 +66,42 @@ impl Config {
         Ok(raw.dupdup)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_file_returns_all_rules_enabled_by_default() {
+        let config = Config::load(Path::new("/nonexistent/dupdup.toml")).unwrap();
+        assert!(config.no_assertions.enabled);
+        assert!(config.duplicate_assert.enabled);
+        assert!(config.tautological_assert.enabled);
+        assert!(config.exclude.is_empty());
+    }
+
+    #[test]
+    fn a_rule_can_be_disabled_without_specifying_the_others() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut f, b"[dupdup.no_assertions]\nenabled = false\n").unwrap();
+        let config = Config::load(f.path()).unwrap();
+        assert!(!config.no_assertions.enabled);
+        assert!(config.duplicate_assert.enabled);
+        assert!(config.tautological_assert.enabled);
+    }
+
+    #[test]
+    fn exclude_patterns_load_from_the_file() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut f, b"[dupdup]\nexclude = [\"vendor/*\"]\n").unwrap();
+        let config = Config::load(f.path()).unwrap();
+        assert_eq!(config.exclude, vec!["vendor/*"]);
+    }
+
+    #[test]
+    fn malformed_toml_is_an_error_not_a_silent_default() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut f, b"not valid toml [[[").unwrap();
+        assert!(Config::load(f.path()).is_err());
+    }
+}
