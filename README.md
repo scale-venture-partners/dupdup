@@ -1,5 +1,10 @@
 # dupdup
 
+> **Experimental / work in progress.** dupdup is not production ready. Rules,
+> flags, and output formats may change without notice, and the dynamic tier's
+> coverage-based findings have a high false-positive rate (see the known
+> limitations below). Treat results as leads to review, not as changes to apply.
+
 Finds duplicative, redundant, and useless tests. The counterpart to a
 mutation-testing tool that grows a suite (more tests to kill more mutants):
 dupdup prunes it.
@@ -137,9 +142,8 @@ asserted, only what code ran.** Concretely, on that same real suite:
 
 - Two tests calling the same low-branching function with *different*
   assertions about its result show identical coverage — not just
-  loop/boundary-condition functions like the `derive_tier` example above,
-  but any function most of whose logic isn't conditional on the input two
-  tests happen to differ on.
+  loop/boundary-condition functions, but any function most of whose logic
+  isn't conditional on the input two tests happen to differ on.
 - Two tests sharing setup/constructor code, where a "small" test only
   exercises that shared baseline and a "big" test exercises it plus more,
   look like subset/superset even when they're testing unrelated things —
