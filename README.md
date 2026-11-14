@@ -258,6 +258,13 @@ into a warning once you've confirmed which cause applies.
 dupdup analyze --kill-matrix-json kills.json
 ```
 
+If the matrix has fewer killed mutants than half the number of tests, only
+`COVERS_NOTHING` is reported: over so few mutants, tests that kill the same
+one or two look interchangeable because the universe can't tell them apart.
+Pass `--allow-sparse-kill-matrix` to see every relation anyway, and mutate
+more of the code to get a useful matrix. The number of killed mutants and
+tests is always printed to stderr.
+
 where `kills.json` is `{"tests": {"<test id>": ["<mutant id>", ...]}}` — a
 test-to-killed-mutants map, i.e. a mutation-testing kill matrix with the
 tests attributed per mutant, not just an overall survive/kill count.

@@ -83,6 +83,12 @@ enum Commands {
         /// covered.
         #[arg(long)]
         union_relation: bool,
+        /// Report every relation from --kill-matrix-json even when it has
+        /// fewer killed mutants than half the number of tests. By default a
+        /// matrix that sparse reports only COVERS_NOTHING, since the other
+        /// relations can't tell tests apart over so few mutants.
+        #[arg(long)]
+        allow_sparse_kill_matrix: bool,
         /// Directory the coverage run's test paths are relative to (the
         /// pytest rootdir), inside a git repo. Default: the current directory.
         #[arg(long, default_value = ".")]
@@ -147,6 +153,7 @@ fn main() -> anyhow::Result<()> {
             include_fixtures,
             removal_set,
             union_relation,
+            allow_sparse_kill_matrix,
             test_root,
             no_assertion_check,
             kill_matrix_json,
@@ -159,6 +166,7 @@ fn main() -> anyhow::Result<()> {
             include_fixtures,
             removal_set,
             union_relation,
+            allow_sparse_kill_matrix,
             test_root: &test_root,
             no_assertion_check,
             kill_matrix_json: kill_matrix_json.as_deref(),
@@ -411,6 +419,7 @@ struct AnalyzeOptions<'a> {
     include_fixtures: bool,
     removal_set: bool,
     union_relation: bool,
+    allow_sparse_kill_matrix: bool,
     test_root: &'a Path,
     no_assertion_check: bool,
     kill_matrix_json: Option<&'a Path>,
@@ -426,6 +435,7 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
         include_fixtures,
         removal_set,
         union_relation,
+        allow_sparse_kill_matrix,
         test_root,
         no_assertion_check,
         kill_matrix_json,
@@ -490,6 +500,18 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
     if let Some(km_path) = kill_matrix_json {
         let loaded = dynamic::killmatrix::load(km_path)?;
         let mut findings = redundancy::analyze(&loaded.tests);
+        eprintln!(
+            "mutation: {} killed mutant(s) across {} test(s)",
+            redundancy::universe_size(&loaded.tests),
+            loaded.tests.len()
+        );
+        if redundancy::is_sparse(&loaded.tests) && !allow_sparse_kill_matrix {
+            eprintln!(
+                "warning: too few killed mutants to tell tests apart; reporting only \
+                 COVERS_NOTHING. Mutate more of the code, or pass --allow-sparse-kill-matrix."
+            );
+            findings.retain(|f| f.kind == redundancy::RedundancyKind::CoversNothing);
+        }
         if removal_set {
             findings.extend(
                 redundancy::removable_set(&loaded.tests)

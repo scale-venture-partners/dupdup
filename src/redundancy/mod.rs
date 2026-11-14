@@ -222,6 +222,29 @@ pub fn analyze_with(tests: &[TestCoverage], union_relation: bool) -> Vec<Redunda
     findings
 }
 
+/// How many distinct requirements at least one of `tests` covers.
+#[must_use]
+pub fn universe_size(tests: &[TestCoverage]) -> usize {
+    let Some(first) = tests.first() else {
+        return 0;
+    };
+    let mut union = first.bits.clone();
+    union.clear();
+    for t in tests {
+        union.union_with(&t.bits);
+    }
+    union.count_ones(..)
+}
+
+/// Whether a kill matrix has too few killed mutants to tell tests apart:
+/// fewer than one for every two tests. Over a universe that small, tests
+/// that kill the same one or two mutants look interchangeable because the
+/// universe can't distinguish them, not because they are.
+#[must_use]
+pub fn is_sparse(tests: &[TestCoverage]) -> bool {
+    universe_size(tests) * 2 < tests.len()
+}
+
 /// The most peers a `ContributesNothingUnique` finding may name. A larger
 /// cover is true of nearly any test in a big file, since each requirement
 /// can be covered by a different peer, and isn't a claim a reader can check.
@@ -677,5 +700,28 @@ mod tests {
             .iter()
             .any(|f| f.kind == RedundancyKind::ContributesNothingUnique));
         assert!(analyze_with(&tests, false).is_empty());
+    }
+
+    #[test]
+    fn a_universe_of_few_mutants_over_many_tests_is_sparse() {
+        let tests: Vec<TestCoverage> = (0..10)
+            .map(|i| tc(&format!("f.py::t{i}"), &[i % 2]))
+            .collect();
+        assert_eq!(universe_size(&tests), 2);
+        assert!(is_sparse(&tests));
+    }
+
+    #[test]
+    fn a_universe_with_a_mutant_for_every_other_test_is_not_sparse() {
+        let tests: Vec<TestCoverage> = (0..6)
+            .map(|i| tc(&format!("f.py::t{i}"), &[i % 3]))
+            .collect();
+        assert_eq!(universe_size(&tests), 3);
+        assert!(!is_sparse(&tests));
+    }
+
+    #[test]
+    fn no_tests_is_not_sparse() {
+        assert!(!is_sparse(&[]));
     }
 }
