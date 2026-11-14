@@ -64,6 +64,12 @@ enum Commands {
         /// unrelated tests look like subsets of each other.
         #[arg(long)]
         include_fixtures: bool,
+        /// Also report a jointly coverage-preserving set of tests
+        /// (`REMOVABLE`) that can all be removed at once without shrinking
+        /// any file's coverage. Preserves coverage, not behaviour: two tests
+        /// can cover the same lines and check different things.
+        #[arg(long)]
+        removal_set: bool,
         /// Test-to-killed-mutant JSON (see `dupdup::dynamic::killmatrix` for
         /// the schema). No upstream tool produces this yet.
         #[arg(long)]
@@ -115,6 +121,7 @@ fn main() -> anyhow::Result<()> {
             junit_xml,
             allow_incomplete_context,
             include_fixtures,
+            removal_set,
             kill_matrix_json,
             json,
         } => run_analyze(
@@ -122,6 +129,7 @@ fn main() -> anyhow::Result<()> {
             junit_xml.as_deref(),
             allow_incomplete_context,
             include_fixtures,
+            removal_set,
             kill_matrix_json.as_deref(),
             json,
         ),
@@ -342,6 +350,7 @@ fn run_analyze(
     junit_xml: Option<&Path>,
     allow_incomplete_context: bool,
     include_fixtures: bool,
+    removal_set: bool,
     kill_matrix_json: Option<&Path>,
     json: bool,
 ) -> anyhow::Result<()> {
@@ -366,6 +375,7 @@ fn run_analyze(
                             kind: redundancy::RedundancyKind::NoCoverage,
                             test_id,
                             related: Vec::new(),
+                            other_matches: 0,
                         }),
                 );
             }
@@ -374,17 +384,44 @@ fn run_analyze(
                  can't be detected. Pass --junit-xml to enable that check."
             ),
         }
+        if removal_set {
+            findings.extend(
+                redundancy::removable_set(&loaded.tests)
+                    .into_iter()
+                    .map(|test_id| redundancy::RedundancyFinding {
+                        kind: redundancy::RedundancyKind::Removable,
+                        test_id,
+                        related: Vec::new(),
+                        other_matches: 0,
+                    }),
+            );
+        }
         reports.push(AnalyzeReport {
             source: "coverage",
             findings,
+            tests_analyzed: loaded.tests.len(),
         });
     }
 
     if let Some(km_path) = kill_matrix_json {
         let loaded = dynamic::killmatrix::load(km_path)?;
+        let mut findings = redundancy::analyze(&loaded.tests);
+        if removal_set {
+            findings.extend(
+                redundancy::removable_set(&loaded.tests)
+                    .into_iter()
+                    .map(|test_id| redundancy::RedundancyFinding {
+                        kind: redundancy::RedundancyKind::Removable,
+                        test_id,
+                        related: Vec::new(),
+                        other_matches: 0,
+                    }),
+            );
+        }
         reports.push(AnalyzeReport {
             source: "mutation",
-            findings: redundancy::analyze(&loaded.tests),
+            findings,
+            tests_analyzed: loaded.tests.len(),
         });
     }
 
@@ -393,6 +430,11 @@ fn run_analyze(
     }
 
     if json {
+        for report in &reports {
+            if let Some(line) = report.flagged_summary() {
+                eprintln!("{line}");
+            }
+        }
         output::print_analyze_json(&reports)?;
     } else {
         output::print_analyze_human(&reports);

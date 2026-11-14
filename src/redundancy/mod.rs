@@ -31,6 +31,11 @@ pub enum RedundancyKind {
     /// Every requirement this test covers is also covered by the union of
     /// every other test — removing it would shrink nothing.
     ContributesNothingUnique,
+    /// Safe to remove together with every other `Removable` test without
+    /// shrinking the coverage of its file. Unlike the relations above, which
+    /// are per test, this set is jointly coverage-preserving. Set by
+    /// `analyze --removal-set`, not by [`analyze`].
+    Removable,
     /// Covers zero requirements (zero lines for the coverage source, zero
     /// killed mutants for the mutation source) — vacuously a subset of
     /// every other test, so reported once instead of once per peer.
@@ -52,6 +57,11 @@ pub struct RedundancyFinding {
     /// (empty for `ContributesNothingUnique` and `CoversNothing`, which are
     /// about the whole suite or nothing at all).
     pub related: Vec<String>,
+    /// How many further tests matched the same relation but aren't named in
+    /// `related`: only the tightest superset is named for
+    /// `SubsumedCoverage`, and every other duplicate is named for
+    /// `DuplicateCoverage` already.
+    pub other_matches: usize,
 }
 
 /// Pytest's parametrize suffix (`test_foo[1-2]`). Siblings in the same
@@ -129,6 +139,7 @@ pub fn analyze(tests: &[TestCoverage]) -> Vec<RedundancyFinding> {
                 kind: RedundancyKind::CoversNothing,
                 test_id: test.test_id.clone(),
                 related: Vec::new(),
+                other_matches: 0,
             });
         }
     }
@@ -137,27 +148,47 @@ pub fn analyze(tests: &[TestCoverage]) -> Vec<RedundancyFinding> {
         if explained.contains(&i) {
             continue;
         }
+        // Every comparable test with identical coverage, and the tightest
+        // (fewest-bit) strict superset. One finding of each kind per test,
+        // not one per peer.
+        let mut twins: Vec<usize> = Vec::new();
+        let mut supersets = 0usize;
+        let mut tightest: Option<usize> = None;
         for j in 0..n {
             if i == j || !comparable(&tests[i].test_id, &tests[j].test_id) {
                 continue;
             }
             if tests[i].bits == tests[j].bits {
-                explained.insert(i);
-                if i < j {
-                    findings.push(RedundancyFinding {
-                        kind: RedundancyKind::DuplicateCoverage,
-                        test_id: tests[i].test_id.clone(),
-                        related: vec![tests[j].test_id.clone()],
-                    });
-                }
+                twins.push(j);
             } else if is_subset(&tests[i].bits, &tests[j].bits) {
-                explained.insert(i);
+                supersets += 1;
+                if tightest
+                    .is_none_or(|k| tests[j].bits.count_ones(..) < tests[k].bits.count_ones(..))
+                {
+                    tightest = Some(j);
+                }
+            }
+        }
+        if !twins.is_empty() {
+            explained.insert(i);
+            // The group is reported once, from its lowest-indexed member.
+            if twins.iter().all(|&j| i < j) {
                 findings.push(RedundancyFinding {
-                    kind: RedundancyKind::SubsumedCoverage,
+                    kind: RedundancyKind::DuplicateCoverage,
                     test_id: tests[i].test_id.clone(),
-                    related: vec![tests[j].test_id.clone()],
+                    related: twins.iter().map(|&j| tests[j].test_id.clone()).collect(),
+                    other_matches: 0,
                 });
             }
+        }
+        if let Some(k) = tightest {
+            explained.insert(i);
+            findings.push(RedundancyFinding {
+                kind: RedundancyKind::SubsumedCoverage,
+                test_id: tests[i].test_id.clone(),
+                related: vec![tests[k].test_id.clone()],
+                other_matches: supersets - 1,
+            });
         }
     }
 
@@ -177,11 +208,64 @@ pub fn analyze(tests: &[TestCoverage]) -> Vec<RedundancyFinding> {
                 kind: RedundancyKind::ContributesNothingUnique,
                 test_id: test.test_id.clone(),
                 related: Vec::new(),
+                other_matches: 0,
             });
         }
     }
 
     findings
+}
+
+/// A jointly coverage-preserving set of tests that can all be removed at once:
+/// removing every returned test leaves the union of requirements covered
+/// within each test's file unchanged, and so the whole suite's too. Greedy,
+/// not minimum: smallest tests are considered first, and a test is taken only
+/// if each of its requirements is still covered by a test that stays.
+///
+/// A parametrized test (`[` in its id) is never removed, since sharing
+/// coverage is the point of parametrizing; it still counts as covering. Ids
+/// that aren't pytest node ids are all scoped together.
+///
+/// This preserves coverage, not behaviour: two tests can cover the same
+/// lines and check different things.
+#[must_use]
+pub fn removable_set(tests: &[TestCoverage]) -> Vec<String> {
+    let mut by_scope: std::collections::BTreeMap<&str, Vec<usize>> = Default::default();
+    for (i, t) in tests.iter().enumerate() {
+        let scope = if t.test_id.contains("::") {
+            test_file(&t.test_id)
+        } else {
+            ""
+        };
+        by_scope.entry(scope).or_default().push(i);
+    }
+
+    let mut removable = Vec::new();
+    for members in by_scope.values() {
+        let universe = tests[members[0]].bits.len();
+        let mut count = vec![0usize; universe];
+        for &i in members {
+            for b in tests[i].bits.ones() {
+                count[b] += 1;
+            }
+        }
+        let mut order: Vec<usize> = members
+            .iter()
+            .copied()
+            .filter(|&i| !tests[i].test_id.contains('['))
+            .collect();
+        order.sort_by_key(|&i| (tests[i].bits.count_ones(..), tests[i].test_id.clone()));
+        for i in order {
+            if tests[i].bits.ones().all(|b| count[b] >= 2) {
+                for b in tests[i].bits.ones() {
+                    count[b] -= 1;
+                }
+                removable.push(tests[i].test_id.clone());
+            }
+        }
+    }
+    removable.sort();
+    removable
 }
 
 #[cfg(test)]
@@ -429,5 +513,88 @@ mod tests {
         let findings = analyze(&tests);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].kind, RedundancyKind::CoversNothing);
+    }
+
+    fn tc(id: &str, set: &[usize]) -> TestCoverage {
+        TestCoverage {
+            test_id: id.into(),
+            bits: bits(set, 8),
+        }
+    }
+
+    #[test]
+    fn a_group_of_identical_tests_is_one_finding() {
+        let tests = vec![
+            tc("f.py::test_a", &[1, 2]),
+            tc("f.py::test_b", &[1, 2]),
+            tc("f.py::test_c", &[1, 2]),
+        ];
+        let findings = analyze(&tests);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].test_id, "f.py::test_a");
+        assert_eq!(findings[0].related, vec!["f.py::test_b", "f.py::test_c"]);
+    }
+
+    #[test]
+    fn a_subsumed_test_names_only_its_tightest_superset() {
+        let tests = vec![
+            tc("f.py::test_small", &[1]),
+            tc("f.py::test_huge", &[1, 2, 3, 4]),
+            tc("f.py::test_medium", &[1, 2]),
+        ];
+        let findings = analyze(&tests);
+        let small = findings
+            .iter()
+            .find(|f| f.test_id == "f.py::test_small" && f.kind == RedundancyKind::SubsumedCoverage)
+            .unwrap();
+        assert_eq!(small.related, vec!["f.py::test_medium"]);
+        assert_eq!(small.other_matches, 1);
+    }
+
+    #[test]
+    fn removable_set_keeps_one_of_two_identical_tests() {
+        let tests = vec![tc("f.py::test_a", &[1, 2]), tc("f.py::test_b", &[1, 2])];
+        assert_eq!(removable_set(&tests), vec!["f.py::test_a"]);
+    }
+
+    #[test]
+    fn removable_set_never_removes_a_unique_test() {
+        let tests = vec![tc("f.py::test_a", &[1]), tc("f.py::test_b", &[2])];
+        assert!(removable_set(&tests).is_empty());
+    }
+
+    #[test]
+    fn removable_set_is_jointly_safe_for_overlapping_tests() {
+        // Each of a, b, c is individually covered by the other two, but
+        // removing a and b together would lose bit 1.
+        let tests = vec![
+            tc("f.py::test_a", &[1]),
+            tc("f.py::test_b", &[1]),
+            tc("f.py::test_c", &[1, 2]),
+            tc("f.py::test_d", &[2]),
+        ];
+        let removed = removable_set(&tests);
+        let kept: Vec<&TestCoverage> = tests
+            .iter()
+            .filter(|t| !removed.contains(&t.test_id))
+            .collect();
+        let mut union = bits(&[], 8);
+        for t in kept {
+            union.union_with(&t.bits);
+        }
+        assert!(union.contains(1) && union.contains(2));
+        assert!(!removed.is_empty());
+    }
+
+    #[test]
+    fn removable_set_never_removes_a_parametrized_test() {
+        let tests = vec![tc("f.py::test_a[1]", &[1]), tc("f.py::test_a[2]", &[1])];
+        assert!(removable_set(&tests).is_empty());
+    }
+
+    #[test]
+    fn removable_set_scopes_coverage_to_the_file() {
+        let tests = vec![tc("a.py::test_x", &[1]), tc("b.py::test_y", &[1])];
+        assert!(removable_set(&tests).is_empty());
     }
 }

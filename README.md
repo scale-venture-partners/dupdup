@@ -103,6 +103,21 @@ Four relations, per source:
   the union of every other test, even though no single other test subsumes
   it alone (the "god test" case, in reverse).
 
+Each test gets at most one finding per relation: `DUPLICATE_COVERAGE` is
+reported once per group of identical tests (from its first member, naming
+the rest), and `SUBSUMED_COVERAGE` names only the tightest superset test,
+with `(+N more)` for the others. A summary line prints how many tests were
+flagged out of how many were analyzed, and warns when that share is above
+20%: a share that large means coverage isn't telling tests apart, not that
+most of the suite is redundant.
+
+`--removal-set` also prints `REMOVABLE`: a greedy, jointly
+coverage-preserving set of tests that can all be removed together without
+shrinking any file's coverage (parametrized tests are never in it). That is
+the safe-together answer the per-test relations can't give, but it
+preserves coverage, not behaviour: two tests can cover the same lines and
+check different things.
+
 Tests that only differ by a pytest `parametrize` id (`test_foo[1]` vs.
 `test_foo[2]`) are exempted from these relations against each other —
 sharing coverage is the point of parametrizing, not evidence of redundancy.
