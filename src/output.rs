@@ -127,11 +127,14 @@ pub fn print_analyze_human(reports: &[AnalyzeReport]) {
     for report in reports {
         println!("-- {} --", report.source);
         for f in &report.findings {
-            let more = if f.other_matches > 0 {
+            let mut more = if f.other_matches > 0 {
                 format!(" (+{} more)", f.other_matches)
             } else {
                 String::new()
             };
+            if let Some(n) = f.evaluated {
+                more.push_str(&format!(" (0 of {n} mutants killed)"));
+            }
             if f.related.is_empty() {
                 println!("{}  {}", kind_label(f.kind), f.test_id);
             } else {
@@ -161,6 +164,7 @@ struct JsonFinding<'a> {
     test_id: &'a str,
     related: &'a [String],
     other_matches: usize,
+    evaluated: Option<usize>,
 }
 
 /// Prints every report's findings as one flat JSON array, each entry tagged
@@ -178,6 +182,7 @@ pub fn print_analyze_json(reports: &[AnalyzeReport]) -> anyhow::Result<()> {
                 test_id: &f.test_id,
                 related: &f.related,
                 other_matches: f.other_matches,
+                evaluated: f.evaluated,
             })
         })
         .collect();
@@ -188,6 +193,7 @@ pub fn print_analyze_json(reports: &[AnalyzeReport]) -> anyhow::Result<()> {
 #[derive(Serialize)]
 struct KillMatrix<'a> {
     tests: &'a HashMap<String, Vec<String>>,
+    evaluated: &'a HashMap<String, usize>,
 }
 
 /// Prints a mutation collector's kill matrix in the
@@ -196,10 +202,13 @@ struct KillMatrix<'a> {
 ///
 /// # Errors
 /// Returns an error if serialization fails (never expected in practice).
-pub fn print_kill_matrix_json(kills: &HashMap<String, Vec<String>>) -> anyhow::Result<()> {
+pub fn print_kill_matrix_json(matrix: &crate::mutate::KillMatrix) -> anyhow::Result<()> {
     println!(
         "{}",
-        serde_json::to_string_pretty(&KillMatrix { tests: kills })?
+        serde_json::to_string_pretty(&KillMatrix {
+            tests: &matrix.tests,
+            evaluated: &matrix.evaluated,
+        })?
     );
     Ok(())
 }
@@ -217,6 +226,7 @@ mod tests {
                     test_id: format!("f.py::t{i}"),
                     related: vec![],
                     other_matches: 0,
+                    evaluated: None,
                 })
                 .collect(),
             tests_analyzed: analyzed,
@@ -249,7 +259,31 @@ mod tests {
             test_id: "t::x".into(),
             related: vec![],
             other_matches: 0,
+            evaluated: None,
         });
         assert_eq!(r.flagged_tests(), 0);
+    }
+
+    #[test]
+    fn an_evaluated_count_is_shown_on_a_covers_nothing_finding() {
+        let mut r = report(0, 1);
+        r.findings.push(RedundancyFinding {
+            kind: RedundancyKind::CoversNothing,
+            test_id: "f.py::t".into(),
+            related: vec![],
+            other_matches: 0,
+            evaluated: Some(7),
+        });
+        let json = {
+            let flat = serde_json::to_string(
+                &r.findings
+                    .iter()
+                    .map(|f| f.evaluated)
+                    .collect::<Vec<Option<usize>>>(),
+            )
+            .unwrap();
+            flat
+        };
+        assert_eq!(json, "[7]");
     }
 }

@@ -276,6 +276,12 @@ where `kills.json` is `{"tests": {"<test id>": ["<mutant id>", ...]}}` — a
 test-to-killed-mutants map, i.e. a mutation-testing kill matrix with the
 tests attributed per mutant, not just an overall survive/kill count.
 
+`kills.json` also carries `"evaluated": {"<test id>": N}`, how many mutants each
+test was run against, so a `COVERS_NOTHING` finding reads
+`(0 of N mutants killed)` and the reader can tell a test that was run against
+20 mutants from one run against 1. The field is optional on read, so older
+files still load.
+
 A test that was run against at least one mutant that was killed or survived,
 and killed none, appears with an empty list, so `analyze` reports it as
 `COVERS_NOTHING`. A test that never ran against an evaluated mutant (its
