@@ -268,6 +268,14 @@ test and a service test of the same function, say), and mutants are tied to
 the code under test, not to shared infrastructure the way covered lines are.
 Ids that aren't pytest node ids were already compared across the whole set.
 
+A kill-matrix finding is relative to the files that were mutated: a test that
+killed nothing there may exist to test other code. `analyze` prints that scope
+(from the matrix's `"mutated"` record). When a coverage report is passed
+alongside (`--coverage-json`/`--coverage-data`), a `COVERS_NOTHING` finding
+for a test that also covers code outside the mutated files is set aside, and
+that test stays out of `--removal-set`. Mutate the whole package before
+acting on a mutation result.
+
 If the matrix has fewer killed mutants than half the number of tests, only
 `COVERS_NOTHING` is reported: over so few mutants, tests that kill the same
 one or two look interchangeable because the universe can't tell them apart.

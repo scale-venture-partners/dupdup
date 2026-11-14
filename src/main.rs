@@ -4,6 +4,7 @@ use dupdup::static_lint::rules::Severity;
 use dupdup::{dynamic, git, mutate, output, redundancy, static_lint};
 use output::AnalyzeReport;
 use regex::Regex;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -464,6 +465,55 @@ struct AnalyzeOptions<'a> {
     json: bool,
 }
 
+/// Makes a kill-matrix finding relative to what was mutated. Prints the scope
+/// and, when `coverage_files` says which files each test covered, sets aside
+/// `COVERS_NOTHING` findings for tests that also cover code outside the
+/// mutated files: those tests may be valuable for that other code, which no
+/// mutant touched. Returns the set-aside test ids, which are also kept out of
+/// the removal set.
+fn set_aside_outside_scope(
+    findings: &mut Vec<redundancy::RedundancyFinding>,
+    mutated: &HashSet<&str>,
+    coverage_files: Option<&HashMap<String, HashSet<String>>>,
+    mutated_files: usize,
+) -> HashSet<String> {
+    if mutated_files == 0 {
+        eprintln!(
+            "note: this kill matrix doesn't record which files were mutated, so its findings can't \
+             be tied to a scope; re-run `dupdup mutate` to record it"
+        );
+        return HashSet::new();
+    }
+    eprintln!(
+        "mutation scope: {mutated_files} source file(s). COVERS_NOTHING and --removal-set are \
+         relative to them, not to the whole codebase."
+    );
+    let Some(files) = coverage_files else {
+        eprintln!(
+            "note: pass --coverage-json or --coverage-data as well, so tests that also cover code \
+             outside the mutated files can be set aside"
+        );
+        return HashSet::new();
+    };
+    let outside: HashSet<String> = files
+        .iter()
+        .filter(|(_, covered)| covered.iter().any(|f| !mutated.contains(f.as_str())))
+        .map(|(id, _)| id.clone())
+        .collect();
+    let before = findings.len();
+    findings.retain(|f| {
+        !(f.kind == redundancy::RedundancyKind::CoversNothing && outside.contains(&f.test_id))
+    });
+    let set_aside = before - findings.len();
+    if set_aside > 0 {
+        eprintln!(
+            "{set_aside} COVERS_NOTHING finding(s) set aside: those tests also cover code outside \
+             the mutated files"
+        );
+    }
+    outside
+}
+
 fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
     let AnalyzeOptions {
         coverage_json,
@@ -481,11 +531,15 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
     } = *opts;
     let mut reports = Vec::new();
 
+    let mut coverage_files: Option<HashMap<String, HashSet<String>>> = None;
     let loaded_coverage = match (coverage_json, coverage_data) {
         (Some(p), _) => Some(dynamic::coverage::load(p, include_fixtures)?),
         (None, Some(p)) => Some(dynamic::coverage::load_data(p, include_fixtures)?),
         (None, None) => None,
     };
+    if let Some(l) = &loaded_coverage {
+        coverage_files = Some(l.files_by_test.clone());
+    }
     if let Some(mut loaded) = loaded_coverage {
         let all_ids: Vec<String> = loaded.tests.iter().map(|t| t.test_id.clone()).collect();
         if !no_assertion_check {
@@ -554,6 +608,13 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
                 f.evaluated = loaded.evaluated.get(&f.test_id).copied();
             }
         }
+        let mutated: HashSet<&str> = loaded.mutated.keys().map(String::as_str).collect();
+        let outside_scope = set_aside_outside_scope(
+            &mut findings,
+            &mutated,
+            coverage_files.as_ref(),
+            loaded.mutated.len(),
+        );
         if redundancy::is_sparse(&loaded.tests) && !allow_sparse_kill_matrix {
             eprintln!(
                 "warning: too few killed mutants to tell tests apart; reporting only \
@@ -565,6 +626,7 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
             findings.extend(
                 redundancy::removable_set_scoped(&loaded.tests, redundancy::Scope::Anywhere)
                     .into_iter()
+                    .filter(|id| !outside_scope.contains(id))
                     .map(|test_id| redundancy::RedundancyFinding {
                         kind: redundancy::RedundancyKind::Removable,
                         test_id,
@@ -658,6 +720,54 @@ fn run_mutate(opts: &MutateOptions) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn nothing(id: &str) -> redundancy::RedundancyFinding {
+        redundancy::RedundancyFinding {
+            kind: redundancy::RedundancyKind::CoversNothing,
+            test_id: id.into(),
+            related: vec![],
+            other_matches: 0,
+            evaluated: Some(1),
+        }
+    }
+
+    fn files(pairs: &[(&str, &[&str])]) -> HashMap<String, HashSet<String>> {
+        pairs
+            .iter()
+            .map(|(id, fs)| {
+                (
+                    (*id).to_string(),
+                    fs.iter().map(|f| (*f).to_string()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_test_that_also_covers_unmutated_code_is_set_aside() {
+        let mut findings = vec![nothing("t.py::inside"), nothing("t.py::outside")];
+        let mutated: HashSet<&str> = ["pkg/a.py"].into_iter().collect();
+        let cov = files(&[
+            ("t.py::inside", &["pkg/a.py"]),
+            ("t.py::outside", &["pkg/a.py", "pkg/b.py"]),
+        ]);
+        let aside = set_aside_outside_scope(&mut findings, &mutated, Some(&cov), 1);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].test_id, "t.py::inside");
+        assert!(aside.contains("t.py::outside") && !aside.contains("t.py::inside"));
+    }
+
+    #[test]
+    fn without_coverage_or_scope_nothing_is_set_aside() {
+        let mutated: HashSet<&str> = ["pkg/a.py"].into_iter().collect();
+        let mut findings = vec![nothing("t.py::x")];
+        assert!(set_aside_outside_scope(&mut findings, &mutated, None, 1).is_empty());
+        assert_eq!(findings.len(), 1);
+        let cov = files(&[("t.py::x", &["pkg/zzz.py"])]);
+        let mut findings = vec![nothing("t.py::x")];
+        assert!(set_aside_outside_scope(&mut findings, &HashSet::new(), Some(&cov), 0).is_empty());
+        assert_eq!(findings.len(), 1);
+    }
 
     #[test]
     fn is_python_test_file_matches_pytest_naming_convention() {

@@ -32,6 +32,8 @@ pub struct LoadedCoverage {
     /// How many distinct test ids had context data in any phase. This, not
     /// `tests.len()`, is what a junit run's test count is checked against.
     pub tests_with_context: usize,
+    /// The source files each test's own body covered, keyed by test id.
+    pub files_by_test: HashMap<String, HashSet<String>>,
 }
 
 /// A non-empty context is `<test id>|<phase>`; the empty string is the
@@ -59,6 +61,7 @@ struct Accumulator {
     requirement_index: HashMap<(String, String), usize>,
     per_test: HashMap<String, Vec<usize>>,
     seen: HashSet<String>,
+    files_by_test: HashMap<String, HashSet<String>>,
     include_fixtures: bool,
 }
 
@@ -88,6 +91,10 @@ impl Accumulator {
             .entry(test_id.to_string())
             .or_default()
             .push(idx);
+        self.files_by_test
+            .entry(test_id.to_string())
+            .or_default()
+            .insert(file.to_string());
     }
 
     fn finish(self) -> LoadedCoverage {
@@ -107,6 +114,7 @@ impl Accumulator {
         LoadedCoverage {
             tests,
             tests_with_context: self.seen.len(),
+            files_by_test: self.files_by_test,
         }
     }
 }
@@ -357,6 +365,18 @@ mod tests {
         let loaded = load(f.path(), false).unwrap();
         assert_eq!(loaded.tests.len(), 1);
         assert_eq!(loaded.tests_with_context, 2);
+    }
+
+    #[test]
+    fn the_source_files_each_test_covered_are_recorded() {
+        let f = write_report(
+            r#"{"files":{"pkg/a.py":{"contexts":{"1":["t.py::x|run"]}},"pkg/b.py":{"contexts":{"1":["t.py::x|run","t.py::y|run"],"2":["t.py::y|setup"]}}}}"#,
+        );
+        let loaded = load(f.path(), false).unwrap();
+        let x = &loaded.files_by_test["t.py::x"];
+        assert!(x.contains("pkg/a.py") && x.contains("pkg/b.py"));
+        let y = &loaded.files_by_test["t.py::y"];
+        assert_eq!(y.len(), 1, "the setup-phase file is not counted: {y:?}");
     }
 
     #[test]
