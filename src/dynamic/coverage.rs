@@ -28,14 +28,18 @@ pub struct LoadedCoverage {
     pub tests: Vec<TestCoverage>,
 }
 
-/// A non-empty context is `<test id>|<phase>` (pytest-cov only records the
-/// `run` phase); the empty string is the baseline context for code that ran
-/// outside any test.
+/// A non-empty context is `<test id>|<phase>`; the empty string is the
+/// baseline context for code that ran outside any test. The test id can
+/// itself contain `|` (a parametrize id such as `test_x[a|b]`), so only a
+/// trailing known phase is split off, never the first `|`.
 fn context_test_id(context: &str) -> Option<&str> {
     if context.is_empty() {
         return None;
     }
-    context.split('|').next()
+    match context.rsplit_once('|') {
+        Some((id, "setup" | "run" | "teardown")) => Some(id),
+        _ => Some(context),
+    }
 }
 
 /// Loads a `coverage json --show-contexts` report from `path` and inverts
@@ -201,6 +205,25 @@ mod tests {
         assert_ne!(
             by_id["test_mod.py::test_add"],
             by_id["test_mod.py::test_sub"]
+        );
+    }
+
+    #[test]
+    fn a_pipe_inside_a_parametrize_id_is_kept() {
+        let f = write_report(
+            r#"{"files": {"pkg/mod.py": {"contexts": {"1": ["t.py::test_p[a|b]|run"]}}}}"#,
+        );
+        let loaded = load(f.path()).unwrap();
+        assert_eq!(loaded.tests.len(), 1);
+        assert_eq!(loaded.tests[0].test_id, "t.py::test_p[a|b]");
+    }
+
+    #[test]
+    fn a_context_without_a_phase_suffix_is_the_whole_id() {
+        assert_eq!(context_test_id("t.py::test_a"), Some("t.py::test_a"));
+        assert_eq!(
+            context_test_id("t.py::test_a[x|y]"),
+            Some("t.py::test_a[x|y]")
         );
     }
 
