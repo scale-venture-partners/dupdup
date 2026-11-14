@@ -182,6 +182,9 @@ pub fn check_file_with_helpers(
                 }
             }),
         );
+        if config.weak_assertions.enabled {
+            found.extend(rules::check_weak_assertions(fn_node, source_bytes, helpers));
+        }
         if config.duplicate_assert.enabled {
             found.extend(rules::check_duplicate_assert(fn_node, source_bytes));
         }
@@ -415,5 +418,63 @@ mod tests {
         let source = "def test_a():\n    \"one\"\n    r = f('x', 1)\n    assert r == 2\n\ndef test_b():\n    \"two\"\n    r = f('y', 3)\n    assert r == 4\n";
         let v = check_file("f.py", source, &Config::default()).unwrap();
         assert_eq!(v.iter().filter(|v| v.rule == "CLONE_TEST").count(), 1);
+    }
+
+    fn weak(source: &str) -> usize {
+        check_file("f.py", source, &Config::default())
+            .unwrap()
+            .iter()
+            .filter(|v| v.rule == "WEAK_ASSERTIONS")
+            .count()
+    }
+
+    #[test]
+    fn weak_shapes_alone_are_flagged() {
+        assert_eq!(
+            weak("def test_a():\n    r = f()\n    assert r is not None\n"),
+            1
+        );
+        assert_eq!(
+            weak("def test_a():\n    r = f()\n    assert isinstance(r, dict)\n"),
+            1
+        );
+        assert_eq!(
+            weak("def test_a():\n    r = f()\n    assert len(r) > 0\n"),
+            1
+        );
+        assert_eq!(weak("def test_a():\n    r = f()\n    assert r\n"), 1);
+        assert_eq!(
+            weak("def test_a():\n    r = f()\n    assert r is not None\n    assert isinstance(r, dict)\n"),
+            1
+        );
+    }
+
+    #[test]
+    fn one_strong_assert_clears_the_test() {
+        assert_eq!(
+            weak("def test_a():\n    r = f()\n    assert r is not None\n    assert r['k'] == 2\n"),
+            0
+        );
+    }
+
+    #[test]
+    fn a_mock_assertion_raises_or_helper_is_a_strong_check() {
+        assert_eq!(
+            weak("def test_a():\n    r = f()\n    assert r\n    m.assert_called_once_with(1)\n"),
+            0
+        );
+        assert_eq!(
+            weak("def test_a():\n    with pytest.raises(E):\n        f()\n    assert g\n"),
+            0
+        );
+        let source = "def check(x):\n    assert x == 1\n\ndef test_a():\n    r = f()\n    assert r\n    check(r)\n";
+        assert_eq!(weak(source), 0);
+    }
+
+    #[test]
+    fn equality_and_comparison_asserts_are_not_weak() {
+        assert_eq!(weak("def test_a():\n    assert f() == 1\n"), 0);
+        assert_eq!(weak("def test_a():\n    assert f() is None\n"), 0);
+        assert_eq!(weak("def test_a():\n    assert len(f()) == 2\n"), 0);
     }
 }

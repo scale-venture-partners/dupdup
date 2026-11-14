@@ -245,6 +245,57 @@ pub fn clone_shape(fn_node: Node, source: &[u8]) -> Option<String> {
     (tokens.len() >= MIN_TOKENS).then(|| tokens.join(" "))
 }
 
+/// Whether an `assert` expression can't tell a right result from a wrong one:
+/// `x is not None`, `isinstance(...)`, `len(x) > 0`, or a bare name,
+/// attribute or subscript tested for truthiness.
+fn is_weak_assertion(assert_node: Node, source: &[u8]) -> bool {
+    let Some(expr) = assert_node.named_child(0) else {
+        return false;
+    };
+    if matches!(expr.kind(), "identifier" | "attribute" | "subscript") {
+        return true;
+    }
+    let text = normalize(expr.utf8_text(source).unwrap_or(""));
+    text.ends_with(" is not None")
+        || (text.starts_with("isinstance(") && text.ends_with(')'))
+        || (text.starts_with("len(")
+            && [") > 0", ") >= 1", ") != 0"]
+                .iter()
+                .any(|s| text.ends_with(s)))
+}
+
+/// A test whose every `assert` is weak (see [`is_weak_assertion`]) and that has
+/// no other way of checking a result (assertion-style call, asserting helper,
+/// `pytest.raises`): it passes for most broken implementations.
+#[must_use]
+pub fn check_weak_assertions(
+    fn_node: Node,
+    source: &[u8],
+    helpers: &super::helpers::AssertingHelpers,
+) -> Option<Violation> {
+    let asserts = assert_statements(fn_node);
+    if asserts.is_empty() || !asserts.iter().all(|a| is_weak_assertion(*a, source)) {
+        return None;
+    }
+    if has_assertion_method_call(fn_node, source)
+        || has_raises_context(fn_node, source)
+        || called_names(fn_node, source)
+            .iter()
+            .any(|n| helpers.contains(n))
+    {
+        return None;
+    }
+    Some(Violation {
+        file: String::new(),
+        line: fn_node.start_position().row + 1,
+        severity: Severity::Warn,
+        rule: "WEAK_ASSERTIONS",
+        test_name: String::new(),
+        message: "every assertion is a None, type, length or truthiness check; it passes for most wrong results"
+            .into(),
+    })
+}
+
 /// What a test checks and what it calls.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Fingerprint {
