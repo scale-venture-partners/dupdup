@@ -228,6 +228,17 @@ fn run_check(
         } else {
             git::all_files(&root)?
         };
+        // Helpers can live in any tracked Python file (conftest.py, a shared
+        // module), not only test files, so index every one of them.
+        let index_sources: Vec<String> = git::all_files(&root)?
+            .iter()
+            .filter(|p| p.extension().is_some_and(|e| e == "py"))
+            .filter_map(|p| std::fs::read_to_string(root.join(p)).ok())
+            .collect();
+        let helpers = static_lint::AssertingHelpers::build(
+            index_sources.iter().map(String::as_str),
+            &config.no_assertions.helpers,
+        );
         for rel_path in files {
             if !is_python_test_file(&rel_path) || is_excluded(&rel_path, &exclude_patterns) {
                 continue;
@@ -243,25 +254,34 @@ fn run_check(
                     Err(_) => continue,
                 }
             };
-            violations.extend(static_lint::check_file(
+            violations.extend(static_lint::check_file_with_helpers(
                 &rel_path.to_string_lossy(),
                 &source,
                 &config,
+                &helpers,
             )?);
         }
     } else {
         // An explicit path is checked regardless of pytest's test-file naming
         // convention — the caller named it, so it's in scope. That
         // convention only gates which files --staged/--all bother to parse.
+        let mut sources = Vec::new();
         for path in paths {
             if is_excluded(path, &exclude_patterns) {
                 continue;
             }
-            let source = std::fs::read_to_string(path)?;
-            violations.extend(static_lint::check_file(
+            sources.push((path, std::fs::read_to_string(path)?));
+        }
+        let helpers = static_lint::AssertingHelpers::build(
+            sources.iter().map(|(_, s)| s.as_str()),
+            &config.no_assertions.helpers,
+        );
+        for (path, source) in &sources {
+            violations.extend(static_lint::check_file_with_helpers(
                 &path.to_string_lossy(),
-                &source,
+                source,
                 &config,
+                &helpers,
             )?);
         }
     }

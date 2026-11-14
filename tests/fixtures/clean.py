@@ -77,3 +77,11 @@ def app_with_rate_limit():
 def test_repeated_call_checks_idempotence():
     assert cache.get("k") == "v"
     assert cache.get("k") == "v"
+
+
+def check_total(order):
+    assert order.total == 10
+
+
+def test_delegates_to_a_helper_that_asserts():
+    check_total(make_order())
