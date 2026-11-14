@@ -362,6 +362,16 @@ reported as inconclusive and excluded, same as a batch that fails without
 any single candidate reproducing the failure alone (a sign of test-order
 coupling, not a clean per-test result).
 
+`--out kills.json` writes the matrix after every source file (atomically)
+instead of printing it at the end, so a long run can be inspected while it
+goes, and `--resume` continues from that file: sources it lists under
+`"mutated"` are skipped and its results are kept. `"mutated"` also records
+which files the matrix spans, which is the scope its findings are relative to.
+When a failing batch can't be attributed from its JUnit report, `mutate`
+re-runs each candidate alone, but only up to `--max-drilldown` candidates
+(default 100); a mutant with more is left out as inconclusive, which is what
+happens to functions the whole suite depends on.
+
 This runs strictly sequentially — one file, one mutant, one test run at a
 time — so it's slow on a large `--source` set; scope it to the modules you
 actually want mutation coverage of, not a whole codebase at once.

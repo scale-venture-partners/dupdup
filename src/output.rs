@@ -4,7 +4,6 @@
 use crate::redundancy::{RedundancyFinding, RedundancyKind};
 use crate::static_lint::rules::{Severity, Violation};
 use serde::Serialize;
-use std::collections::HashMap;
 
 /// Prints `violations` as one line each, then an error/warning summary.
 pub fn print_check_human(violations: &[Violation]) {
@@ -190,26 +189,28 @@ pub fn print_analyze_json(reports: &[AnalyzeReport]) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Serialize)]
-struct KillMatrix<'a> {
-    tests: &'a HashMap<String, Vec<String>>,
-    evaluated: &'a HashMap<String, usize>,
-}
-
-/// Prints a mutation collector's kill matrix in the
-/// `{"tests": {"<test id>": ["<mutant id>", ...]}}` shape
+/// Prints a mutation collector's kill matrix in the shape
 /// `dynamic::killmatrix::load` reads back in.
 ///
 /// # Errors
 /// Returns an error if serialization fails (never expected in practice).
 pub fn print_kill_matrix_json(matrix: &crate::mutate::KillMatrix) -> anyhow::Result<()> {
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&KillMatrix {
-            tests: &matrix.tests,
-            evaluated: &matrix.evaluated,
-        })?
-    );
+    println!("{}", serde_json::to_string_pretty(matrix)?);
+    Ok(())
+}
+
+/// Writes the kill matrix to `path`, replacing it atomically so a reader (or
+/// an interrupted run) never sees a half-written file.
+///
+/// # Errors
+/// Returns an error if the file can't be written.
+pub fn write_kill_matrix_json(
+    path: &std::path::Path,
+    matrix: &crate::mutate::KillMatrix,
+) -> anyhow::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(matrix)?)?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
@@ -285,5 +286,29 @@ mod tests {
             flat
         };
         assert_eq!(json, "[7]");
+    }
+
+    #[test]
+    fn a_written_kill_matrix_loads_back_with_its_scope() {
+        let mut m = crate::mutate::KillMatrix::default();
+        m.tests.insert("t.py::a".into(), vec!["m1".into()]);
+        m.tests.insert("t.py::b".into(), vec![]);
+        m.evaluated.insert("t.py::b".into(), 2);
+        m.mutated.insert("pkg/x.py".into(), 3);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kills.json");
+        write_kill_matrix_json(&path, &m).unwrap();
+        assert!(!path.with_extension("json.tmp").exists());
+        let loaded = crate::dynamic::killmatrix::load(&path).unwrap();
+        assert_eq!(loaded.tests.len(), 2);
+        assert_eq!(loaded.evaluated["t.py::b"], 2);
+        assert_eq!(loaded.mutated["pkg/x.py"], 3);
+    }
+
+    #[test]
+    fn an_older_matrix_without_scope_fields_still_resumes() {
+        let m: crate::mutate::KillMatrix =
+            serde_json::from_str(r#"{"tests": {"t.py::a": ["m1"]}}"#).unwrap();
+        assert!(m.mutated.is_empty() && m.evaluated.is_empty());
     }
 }

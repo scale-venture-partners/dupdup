@@ -136,6 +136,20 @@ enum Commands {
         /// a kill matrix covers a whole package.
         #[arg(long)]
         extreme: bool,
+        /// Write the kill matrix to this file after every source file
+        /// instead of printing it at the end, so a long run can be
+        /// inspected while it goes and resumed with --resume.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Continue from the matrix already in --out: source files it lists
+        /// as mutated are skipped and its results are kept.
+        #[arg(long, requires = "out")]
+        resume: bool,
+        /// When a failing batch can't be attributed from its JUnit report,
+        /// each candidate test is re-run alone; above this many candidates
+        /// the mutant is left out as inconclusive instead.
+        #[arg(long, default_value_t = 100)]
+        max_drilldown: usize,
     },
     /// Write a default dupdup.toml to the current directory
     Init,
@@ -184,7 +198,19 @@ fn main() -> anyhow::Result<()> {
             pytest_cmd,
             timeout_secs,
             extreme,
-        } => run_mutate(&sources, &coverage_json, &pytest_cmd, timeout_secs, extreme),
+            out,
+            resume,
+            max_drilldown,
+        } => run_mutate(&MutateOptions {
+            sources: &sources,
+            coverage_json: &coverage_json,
+            pytest_cmd: &pytest_cmd,
+            timeout_secs,
+            extreme,
+            out: out.as_deref(),
+            resume,
+            max_drilldown,
+        }),
         Commands::Init => run_init(),
     }
 }
@@ -574,26 +600,59 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_mutate(
-    sources: &[PathBuf],
-    coverage_json: &Path,
-    pytest_cmd: &str,
+/// Everything `dupdup mutate` was asked to do.
+struct MutateOptions<'a> {
+    sources: &'a [PathBuf],
+    coverage_json: &'a Path,
+    pytest_cmd: &'a str,
     timeout_secs: u64,
     extreme: bool,
-) -> anyhow::Result<()> {
-    let pytest_cmd: Vec<String> = pytest_cmd.split_whitespace().map(String::from).collect();
+    out: Option<&'a Path>,
+    resume: bool,
+    max_drilldown: usize,
+}
+
+fn run_mutate(opts: &MutateOptions) -> anyhow::Result<()> {
+    let pytest_cmd: Vec<String> = opts
+        .pytest_cmd
+        .split_whitespace()
+        .map(String::from)
+        .collect();
     anyhow::ensure!(!pytest_cmd.is_empty(), "--pytest-cmd must not be empty");
 
     let cwd = std::env::current_dir()?;
     let repo_root = git::repo_root(&cwd)?;
-    let coverage = dynamic::coverage::load_line_coverage(coverage_json)?;
+    let coverage = dynamic::coverage::load_line_coverage(opts.coverage_json)?;
     let cfg = mutate::RunConfig {
         pytest_cmd,
-        timeout: Duration::from_secs(timeout_secs),
-        extreme,
+        timeout: Duration::from_secs(opts.timeout_secs),
+        extreme: opts.extreme,
+        max_drilldown: opts.max_drilldown,
     };
-    let matrix = mutate::collect(&repo_root, sources, &coverage, &cfg)?;
-    output::print_kill_matrix_json(&matrix)
+    let resume = match (opts.resume, opts.out) {
+        (true, Some(path)) if path.exists() => {
+            Some(serde_json::from_str(&std::fs::read_to_string(path)?)?)
+        }
+        _ => None,
+    };
+    let mut progress = |m: &mutate::KillMatrix| -> anyhow::Result<()> {
+        match opts.out {
+            Some(path) => output::write_kill_matrix_json(path, m),
+            None => Ok(()),
+        }
+    };
+    let matrix = mutate::collect(
+        &repo_root,
+        opts.sources,
+        &coverage,
+        &cfg,
+        resume,
+        &mut progress,
+    )?;
+    if opts.out.is_none() {
+        output::print_kill_matrix_json(&matrix)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
