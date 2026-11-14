@@ -172,6 +172,29 @@ struct PreparedSource {
     mutants: Vec<Mutant>,
 }
 
+/// Records one conclusively evaluated mutant in `kills`. Every candidate test
+/// gets an entry, so a test that was run against a mutant and never killed
+/// one stays in the matrix with an empty list (and `analyze` can report it
+/// as `COVERS_NOTHING`). Only `killers` are credited with `mutant_id`. A
+/// test that never ran against an evaluated mutant gets no entry: "this test
+/// could not have killed anything" isn't established for it.
+fn credit(
+    kills: &mut HashMap<String, Vec<String>>,
+    candidates: &[String],
+    killers: &[String],
+    mutant_id: &str,
+) {
+    for t in candidates {
+        kills.entry(t.clone()).or_default();
+    }
+    for t in killers {
+        kills
+            .entry(t.clone())
+            .or_default()
+            .push(mutant_id.to_string());
+    }
+}
+
 /// Collects a kill matrix by mutating `sources` one at a time, restricting
 /// each mutant's test run to what `coverage` says covers its enclosing
 /// statement. Every source is validated up front — present in `coverage`,
@@ -283,6 +306,7 @@ pub fn collect(
                 Outcome::Survived => {
                     survived += 1;
                     eprintln!("  {} survived", mutant.id);
+                    credit(&mut kills, &candidates, &[], &mutant.id);
                 }
                 Outcome::NoCoverage => {
                     no_coverage += 1;
@@ -295,9 +319,7 @@ pub fn collect(
                 Outcome::KilledBy(tests) => {
                     killed += 1;
                     eprintln!("  {} killed by {} test(s)", mutant.id, tests.len());
-                    for t in tests {
-                        kills.entry(t).or_default().push(mutant.id.clone());
-                    }
+                    credit(&mut kills, &candidates, &tests, &mutant.id);
                 }
             }
         }
@@ -316,6 +338,31 @@ pub fn collect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credit_keeps_a_candidate_that_killed_nothing_with_an_empty_list() {
+        let mut kills = HashMap::new();
+        let candidates = vec!["t.py::test_a".to_string(), "t.py::test_b".to_string()];
+        credit(&mut kills, &candidates, &["t.py::test_a".to_string()], "m1");
+        assert_eq!(kills["t.py::test_a"], vec!["m1"]);
+        assert!(kills["t.py::test_b"].is_empty());
+    }
+
+    #[test]
+    fn credit_for_a_survivor_still_registers_every_candidate() {
+        let mut kills = HashMap::new();
+        credit(&mut kills, &["t.py::test_a".to_string()], &[], "m1");
+        assert!(kills["t.py::test_a"].is_empty());
+    }
+
+    #[test]
+    fn credit_accumulates_kills_across_mutants() {
+        let mut kills = HashMap::new();
+        let a = vec!["t.py::test_a".to_string()];
+        credit(&mut kills, &a, &a, "m1");
+        credit(&mut kills, &a, &a, "m2");
+        assert_eq!(kills["t.py::test_a"], vec!["m1", "m2"]);
+    }
 
     #[test]
     fn backup_path_appends_a_suffix_to_the_full_filename() {

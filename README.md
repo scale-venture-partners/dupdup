@@ -269,6 +269,13 @@ where `kills.json` is `{"tests": {"<test id>": ["<mutant id>", ...]}}` — a
 test-to-killed-mutants map, i.e. a mutation-testing kill matrix with the
 tests attributed per mutant, not just an overall survive/kill count.
 
+A test that was run against at least one mutant that was killed or survived,
+and killed none, appears with an empty list, so `analyze` reports it as
+`COVERS_NOTHING`. A test that never ran against an evaluated mutant (its
+lines have no mutation site, or every mutant it covers was inconclusive) has
+no entry: nothing shows it *could* have killed a mutant, so it is not
+reported.
+
 `dupdup mutate` produces `kills.json`. mutmut only records whether a mutant
 was killed at all, not which test did it — its own maintainers flag this
 gap (`# TODO: we should be able to get information on which tests killed
