@@ -99,9 +99,30 @@ Four relations, per source:
 - `DUPLICATE_COVERAGE` — two tests cover exactly the same requirements.
 - `SUBSUMED_COVERAGE` — a test's coverage is a strict subset of another
   single test's.
-- `CONTRIBUTES_NOTHING_UNIQUE` — a test's coverage is fully reproduced by
-  the union of every other test, even though no single other test subsumes
-  it alone (the "god test" case, in reverse).
+- `CONTRIBUTES_NOTHING_UNIQUE` — a test's requirements are fully reproduced
+  by the union of at most three other tests in its file (named in the
+  finding), even though no single other test subsumes it. Coverage source:
+  off by default, enable with `--union-relation`, because each requirement
+  can be covered by a different peer, so it rarely means the test's scenario
+  is covered. On by default for the mutation source, where it means no
+  mutant is killed by this test alone.
+
+By default each test's assertions count as requirements too: its `assert`
+statements, assertion-style calls (`mock.assert_*`, `self.assertX`,
+`pytest.fail`), calls to asserting helpers, and `pytest.raises` statements,
+compared in whitespace-insensitive source form with literals kept. Two tests
+are only flagged as redundant if they cover the same code *and* make the
+same assertions. A test that asserts nothing never counts as redundant to
+one that does. dupdup reads each test's source from `--test-root` (the
+pytest rootdir, inside a git repo; default `.`), warns about tests it can't
+find and errors if it finds none. `--no-assertion-check` turns this off and
+compares line coverage alone.
+
+What survives is a test pair that runs the same code and checks the same
+thing, usually differing only in input or setup. Treat those as
+merge-into-`parametrize` candidates first and deletion candidates second:
+same lines and same assertions doesn't prove the inputs exercise the same
+behaviour.
 
 Each test gets at most one finding per relation: `DUPLICATE_COVERAGE` is
 reported once per group of identical tests (from its first member, naming
@@ -189,6 +210,19 @@ python -m coverage json --show-contexts -o coverage.json
 dupdup analyze --coverage-json coverage.json --junit-xml junit.xml
 ```
 
+`--coverage-data` reads coverage.py's own data file instead of the JSON
+report, and keeps branch arcs when the run used `--cov-branch`:
+
+```bash
+COVERAGE_CORE=ctrace python -m pytest --cov=mypkg --cov-branch --cov-context=test --junitxml=junit.xml
+dupdup analyze --coverage-data .coverage --junit-xml junit.xml
+```
+
+With arcs, each requirement is a `(from line, to line)` pair, so two tests
+that run the same lines but take different branches no longer look the same.
+The JSON report can't express that, even with branch coverage on. Without
+`--cov-branch` the data file gives line coverage, same as the JSON.
+
 `COVERAGE_CORE=ctrace` is recommended on Python 3.12+: `coverage.py`'s
 default `sysmon` core silently drops dynamic-context data for some tests
 instead of erroring. `--junit-xml` lets dupdup cross-check the number of
@@ -223,6 +257,13 @@ into a warning once you've confirmed which cause applies.
 ```bash
 dupdup analyze --kill-matrix-json kills.json
 ```
+
+If the matrix has fewer killed mutants than half the number of tests, only
+`COVERS_NOTHING` is reported: over so few mutants, tests that kill the same
+one or two look interchangeable because the universe can't tell them apart.
+Pass `--allow-sparse-kill-matrix` to see every relation anyway, and mutate
+more of the code to get a useful matrix. The number of killed mutants and
+tests is always printed to stderr.
 
 where `kills.json` is `{"tests": {"<test id>": ["<mutant id>", ...]}}` — a
 test-to-killed-mutants map, i.e. a mutation-testing kill matrix with the

@@ -62,6 +62,25 @@ impl AssertingHelpers {
     }
 }
 
+/// Indexes every tracked `.py` file in the git repo at `root`, plus the
+/// `extra` names.
+///
+/// # Errors
+/// Returns an error if `root` isn't a git repository.
+pub fn index_repo(root: &std::path::Path, extra: &[String]) -> anyhow::Result<AssertingHelpers> {
+    // Helpers can live in any tracked Python file (conftest.py, a shared
+    // module), not only test files, so index every one of them.
+    let sources: Vec<String> = crate::git::all_files(root)?
+        .iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "py"))
+        .filter_map(|p| std::fs::read_to_string(root.join(p)).ok())
+        .collect();
+    Ok(AssertingHelpers::build(
+        sources.iter().map(String::as_str),
+        extra,
+    ))
+}
+
 fn collect(node: Node, source: &[u8], entries: &mut HashMap<String, Entry>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {

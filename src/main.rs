@@ -44,6 +44,12 @@ enum Commands {
         /// `pytest --cov=<pkg> --cov-context=test` run
         #[arg(long)]
         coverage_json: Option<PathBuf>,
+        /// coverage.py's own data file (`.coverage`) from a
+        /// `pytest --cov=<pkg> --cov-branch --cov-context=test` run. Unlike
+        /// --coverage-json it keeps branch arcs, so two tests that run the
+        /// same lines but take different branches stay different.
+        #[arg(long, conflicts_with = "coverage_json")]
+        coverage_data: Option<PathBuf>,
         /// pytest `--junitxml` output from the same run as --coverage-json.
         /// Cross-checked against the test count coverage-json actually
         /// recorded contexts for, so a run missing context data for tests
@@ -70,6 +76,29 @@ enum Commands {
         /// can cover the same lines and check different things.
         #[arg(long)]
         removal_set: bool,
+        /// Also report CONTRIBUTES_NOTHING_UNIQUE: a test whose every
+        /// requirement is covered by a few other tests combined (named in
+        /// the finding). Off by default: each requirement can be covered by
+        /// a different peer, so this rarely means the test's scenario is
+        /// covered.
+        #[arg(long)]
+        union_relation: bool,
+        /// Report every relation from --kill-matrix-json even when it has
+        /// fewer killed mutants than half the number of tests. By default a
+        /// matrix that sparse reports only COVERS_NOTHING, since the other
+        /// relations can't tell tests apart over so few mutants.
+        #[arg(long)]
+        allow_sparse_kill_matrix: bool,
+        /// Directory the coverage run's test paths are relative to (the
+        /// pytest rootdir), inside a git repo. Default: the current directory.
+        #[arg(long, default_value = ".")]
+        test_root: PathBuf,
+        /// Skip reading each test's source. By default two tests only count
+        /// as redundant if they also make the same assertions; without
+        /// this, line coverage alone decides, which flags tests that run the
+        /// same code to check different things.
+        #[arg(long)]
+        no_assertion_check: bool,
         /// Test-to-killed-mutant JSON (see `dupdup::dynamic::killmatrix` for
         /// the schema). No upstream tool produces this yet.
         #[arg(long)]
@@ -118,21 +147,31 @@ fn main() -> anyhow::Result<()> {
         } => run_check(&paths, staged, all, json, &config),
         Commands::Analyze {
             coverage_json,
+            coverage_data,
             junit_xml,
             allow_incomplete_context,
             include_fixtures,
             removal_set,
+            union_relation,
+            allow_sparse_kill_matrix,
+            test_root,
+            no_assertion_check,
             kill_matrix_json,
             json,
-        } => run_analyze(
-            coverage_json.as_deref(),
-            junit_xml.as_deref(),
+        } => run_analyze(&AnalyzeOptions {
+            coverage_json: coverage_json.as_deref(),
+            coverage_data: coverage_data.as_deref(),
+            junit_xml: junit_xml.as_deref(),
             allow_incomplete_context,
             include_fixtures,
             removal_set,
-            kill_matrix_json.as_deref(),
+            union_relation,
+            allow_sparse_kill_matrix,
+            test_root: &test_root,
+            no_assertion_check,
+            kill_matrix_json: kill_matrix_json.as_deref(),
             json,
-        ),
+        }),
         Commands::Mutate {
             sources,
             coverage_json,
@@ -236,17 +275,7 @@ fn run_check(
         } else {
             git::all_files(&root)?
         };
-        // Helpers can live in any tracked Python file (conftest.py, a shared
-        // module), not only test files, so index every one of them.
-        let index_sources: Vec<String> = git::all_files(&root)?
-            .iter()
-            .filter(|p| p.extension().is_some_and(|e| e == "py"))
-            .filter_map(|p| std::fs::read_to_string(root.join(p)).ok())
-            .collect();
-        let helpers = static_lint::AssertingHelpers::build(
-            index_sources.iter().map(String::as_str),
-            &config.no_assertions.helpers,
-        );
+        let helpers = static_lint::helpers::index_repo(&root, &config.no_assertions.helpers)?;
         for rel_path in files {
             if !is_python_test_file(&rel_path) || is_excluded(&rel_path, &exclude_patterns) {
                 continue;
@@ -345,20 +374,85 @@ fn check_context_completeness(
     Ok(())
 }
 
-fn run_analyze(
-    coverage_json: Option<&Path>,
-    junit_xml: Option<&Path>,
+/// Folds each test's assertions into its requirement set. A test whose
+/// source can't be found gains none, so that is reported, and an
+/// all-unresolved run is an error: it almost always means a wrong
+/// `--test-root`, and silently falling back to coverage alone would bring
+/// back the noise this check exists to remove.
+fn add_assertions(tests: &mut [redundancy::TestCoverage], test_root: &Path) -> anyhow::Result<()> {
+    if tests.is_empty() {
+        return Ok(());
+    }
+    let root = git::repo_root(test_root)?;
+    let rel = test_root.canonicalize()?;
+    let helpers = static_lint::helpers::index_repo(&root, &[])?;
+    let fingerprints =
+        dynamic::assertions::load(tests.iter().map(|t| t.test_id.as_str()), &rel, &helpers);
+    if fingerprints.unresolved == tests.len() {
+        anyhow::bail!(
+            "none of the {} tests' source files were found under {}. Pass --test-root \
+             (the pytest rootdir the coverage run used), or --no-assertion-check to \
+             compare line coverage alone.",
+            tests.len(),
+            rel.display()
+        );
+    }
+    if fingerprints.unresolved > 0 {
+        eprintln!(
+            "warning: {} of {} tests' source could not be found under {}; they are compared \
+             on line coverage alone",
+            fingerprints.unresolved,
+            tests.len(),
+            rel.display()
+        );
+    }
+    dynamic::assertions::augment(tests, &fingerprints);
+    Ok(())
+}
+
+/// Everything `dupdup analyze` was asked to do.
+struct AnalyzeOptions<'a> {
+    coverage_json: Option<&'a Path>,
+    coverage_data: Option<&'a Path>,
+    junit_xml: Option<&'a Path>,
     allow_incomplete_context: bool,
     include_fixtures: bool,
     removal_set: bool,
-    kill_matrix_json: Option<&Path>,
+    union_relation: bool,
+    allow_sparse_kill_matrix: bool,
+    test_root: &'a Path,
+    no_assertion_check: bool,
+    kill_matrix_json: Option<&'a Path>,
     json: bool,
-) -> anyhow::Result<()> {
+}
+
+fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
+    let AnalyzeOptions {
+        coverage_json,
+        coverage_data,
+        junit_xml,
+        allow_incomplete_context,
+        include_fixtures,
+        removal_set,
+        union_relation,
+        allow_sparse_kill_matrix,
+        test_root,
+        no_assertion_check,
+        kill_matrix_json,
+        json,
+    } = *opts;
     let mut reports = Vec::new();
 
-    if let Some(cov_path) = coverage_json {
-        let loaded = dynamic::coverage::load(cov_path, include_fixtures)?;
-        let mut findings = redundancy::analyze(&loaded.tests);
+    let loaded_coverage = match (coverage_json, coverage_data) {
+        (Some(p), _) => Some(dynamic::coverage::load(p, include_fixtures)?),
+        (None, Some(p)) => Some(dynamic::coverage::load_data(p, include_fixtures)?),
+        (None, None) => None,
+    };
+    if let Some(mut loaded) = loaded_coverage {
+        if !no_assertion_check {
+            add_assertions(&mut loaded.tests, test_root)?;
+        }
+        let mut findings = redundancy::analyze_with(&loaded.tests, union_relation);
         match junit_xml {
             Some(junit_path) => {
                 let summary = dynamic::junit::load(junit_path)?;
@@ -406,6 +500,18 @@ fn run_analyze(
     if let Some(km_path) = kill_matrix_json {
         let loaded = dynamic::killmatrix::load(km_path)?;
         let mut findings = redundancy::analyze(&loaded.tests);
+        eprintln!(
+            "mutation: {} killed mutant(s) across {} test(s)",
+            redundancy::universe_size(&loaded.tests),
+            loaded.tests.len()
+        );
+        if redundancy::is_sparse(&loaded.tests) && !allow_sparse_kill_matrix {
+            eprintln!(
+                "warning: too few killed mutants to tell tests apart; reporting only \
+                 COVERS_NOTHING. Mutate more of the code, or pass --allow-sparse-kill-matrix."
+            );
+            findings.retain(|f| f.kind == redundancy::RedundancyKind::CoversNothing);
+        }
         if removal_set {
             findings.extend(
                 redundancy::removable_set(&loaded.tests)
@@ -426,7 +532,9 @@ fn run_analyze(
     }
 
     if reports.is_empty() {
-        anyhow::bail!("nothing to analyze: pass --coverage-json and/or --kill-matrix-json");
+        anyhow::bail!(
+            "nothing to analyze: pass --coverage-json, --coverage-data and/or --kill-matrix-json"
+        );
     }
 
     if json {

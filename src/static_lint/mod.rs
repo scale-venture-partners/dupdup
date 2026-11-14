@@ -58,6 +58,53 @@ fn collect_test_functions<'a>(node: Node<'a>, source: &'a [u8], out: &mut Vec<No
     }
 }
 
+/// The assertion fingerprint ([`rules::assertion_fingerprint`]) of every test
+/// in `source`, keyed by its pytest path within the file: `test_x` for a
+/// module-level function, `TestC::test_x` for a method.
+///
+/// # Errors
+/// Returns an error if `source` can't be parsed as Python.
+pub fn assertion_fingerprints(
+    source: &str,
+    helpers: &AssertingHelpers,
+) -> anyhow::Result<std::collections::HashMap<String, rules::Fingerprint>> {
+    let tree = parse(source)?;
+    let mut out = std::collections::HashMap::new();
+    collect_fingerprints(tree.root_node(), source.as_bytes(), "", helpers, &mut out);
+    Ok(out)
+}
+
+fn collect_fingerprints(
+    node: Node,
+    source: &[u8],
+    prefix: &str,
+    helpers: &AssertingHelpers,
+    out: &mut std::collections::HashMap<String, rules::Fingerprint>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_definition" => {
+                let name = test_name(child, source);
+                if name.starts_with("test_") {
+                    out.insert(
+                        format!("{prefix}{name}"),
+                        rules::assertion_fingerprint(child, source, helpers),
+                    );
+                }
+            }
+            "class_definition" => {
+                let name = child
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(source).ok())
+                    .unwrap_or("");
+                collect_fingerprints(child, source, &format!("{prefix}{name}::"), helpers, out);
+            }
+            _ => collect_fingerprints(child, source, prefix, helpers, out),
+        }
+    }
+}
+
 /// The name of the `def` node `fn_node` points at.
 #[must_use]
 pub fn test_name<'a>(fn_node: Node<'a>, source: &'a [u8]) -> &'a str {
@@ -257,5 +304,45 @@ mod tests {
         let mut config = Config::default();
         config.no_assertions.helpers = vec!["external_check".to_string()];
         assert!(check_file("t.py", source, &config).unwrap().is_empty());
+    }
+
+    #[test]
+    fn fingerprints_are_keyed_by_class_qualified_name() {
+        let source = "def test_a():\n    assert x == 1\n\nclass TestC:\n    @pytest.mark.slow\n    def test_b(self):\n        assert y\n        mock.assert_called_once_with(1)\n";
+        let fps = assertion_fingerprints(source, &AssertingHelpers::default()).unwrap();
+        assert_eq!(fps["test_a"].assertions, vec!["assert x == 1"]);
+        assert_eq!(
+            fps["TestC::test_b"].assertions,
+            vec!["assert y", "mock . assert_called_once_with ( 1 )"]
+        );
+    }
+
+    #[test]
+    fn different_literals_make_different_fingerprints() {
+        let a = assertion_fingerprints(
+            "def test_a():\n    assert f() == 1\n",
+            &AssertingHelpers::default(),
+        )
+        .unwrap();
+        let b = assertion_fingerprints(
+            "def test_a():\n    assert f() == 2\n",
+            &AssertingHelpers::default(),
+        )
+        .unwrap();
+        assert_ne!(a["test_a"].assertions, b["test_a"].assertions);
+    }
+
+    #[test]
+    fn a_raises_context_and_a_helper_call_are_part_of_the_fingerprint() {
+        let source = "def check(x):\n    assert x\n\ndef test_a():\n    with pytest.raises(ValueError):\n        f()\n    check(1)\n";
+        let helpers = AssertingHelpers::build([source], &[]);
+        let fps = assertion_fingerprints(source, &helpers).unwrap();
+        let a = &fps["test_a"].assertions;
+        assert_eq!(a.len(), 2);
+        assert!(a
+            .iter()
+            .any(|s| s.contains("raises") && s.contains("f ( )")));
+        assert!(a.iter().any(|s| s == "check ( 1 )"));
+        assert_eq!(fps["test_a"].calls, vec!["check", "f", "raises"]);
     }
 }
