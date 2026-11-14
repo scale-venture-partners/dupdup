@@ -95,8 +95,19 @@ fn run_pytest(
     node_ids: &[String],
     timeout: Duration,
 ) -> anyhow::Result<Option<i32>> {
+    run_pytest_with(cmd, &[], node_ids, timeout)
+}
+
+/// [`run_pytest`] with extra arguments placed before the node ids.
+fn run_pytest_with(
+    cmd: &[String],
+    extra: &[String],
+    node_ids: &[String],
+    timeout: Duration,
+) -> anyhow::Result<Option<i32>> {
     let mut child = Command::new(&cmd[0])
         .args(&cmd[1..])
+        .args(extra)
         .args(node_ids)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -122,15 +133,35 @@ fn run_pytest(
 /// exit here is a genuine failure (or hang) under the mutant, never a bad
 /// node id.
 fn run_mutant(cfg: &RunConfig, candidates: &[String]) -> anyhow::Result<Outcome> {
+    static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     if candidates.is_empty() {
         return Ok(Outcome::NoCoverage);
     }
-    match run_pytest(&cfg.pytest_cmd, candidates, cfg.timeout)? {
+    // The batch run writes a JUnit report, so a failure can be attributed to
+    // the tests that failed without re-running each candidate alone.
+    let report = std::env::temp_dir().join(format!(
+        "dupdup-{}-{}.xml",
+        std::process::id(),
+        RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let extra = [format!("--junitxml={}", report.display())];
+    let exit = run_pytest_with(&cfg.pytest_cmd, &extra, candidates, cfg.timeout)?;
+    let failed = crate::dynamic::junit::load(&report)
+        .map(|s| s.failed_tests)
+        .unwrap_or_default();
+    let _ = std::fs::remove_file(&report);
+    match exit {
         Some(0) => Ok(Outcome::Survived),
         // Not drilled down: that would cost up to one more full timeout
         // per candidate, for every slow mutant.
         None => Ok(Outcome::Inconclusive("the batch run timed out")),
         Some(_) => {
+            let killers = killers_from_failures(candidates, &failed);
+            if !killers.is_empty() {
+                return Ok(Outcome::KilledBy(killers));
+            }
+            // No readable failure list: attribute by running each candidate
+            // alone.
             let mut killers = Vec::new();
             for id in candidates {
                 let single = std::slice::from_ref(id);
@@ -149,6 +180,16 @@ fn run_mutant(cfg: &RunConfig, candidates: &[String]) -> anyhow::Result<Outcome>
             }
         }
     }
+}
+
+/// The candidates among `candidates` whose JUnit key is in `failed`.
+fn killers_from_failures(candidates: &[String], failed: &[String]) -> Vec<String> {
+    let failed: HashSet<&str> = failed.iter().map(String::as_str).collect();
+    candidates
+        .iter()
+        .filter(|id| failed.contains(crate::dynamic::junit::junit_key(id).as_str()))
+        .cloned()
+        .collect()
 }
 
 fn backup_path(path: &Path) -> PathBuf {
@@ -352,6 +393,24 @@ pub fn collect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn killers_are_the_candidates_that_failed_in_the_batch() {
+        let candidates = vec![
+            "tests/test_a.py::test_x".to_string(),
+            "tests/test_a.py::TestC::test_y[p]".to_string(),
+            "tests/test_b.py::test_z".to_string(),
+        ];
+        let failed = vec![
+            "tests.test_a.TestC::test_y[p]".to_string(),
+            "tests.other::unrelated".to_string(),
+        ];
+        assert_eq!(
+            killers_from_failures(&candidates, &failed),
+            vec!["tests/test_a.py::TestC::test_y[p]"]
+        );
+        assert!(killers_from_failures(&candidates, &[]).is_empty());
+    }
 
     #[test]
     fn credit_keeps_a_candidate_that_killed_nothing_with_an_empty_list() {
