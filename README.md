@@ -46,7 +46,7 @@ friendly, same shape as [windbag](https://github.com/scale-venture-partners/wind
 |---|---|---|
 | `NO_ASSERTIONS` | error | A test with no `assert`, no `mock.assert_*(...)`/`self.assertX(...)`/shared `_assert_helper(...)`/`pytest.fail(...)` call, no `pytest.skip(...)` call, and no `pytest.raises`/`assertRaises` context — it can't fail (or self-report as skipped) regardless of what the code does. |
 | `TAUTOLOGICAL_ASSERT` | error | `assert x == x` where neither side contains a call — both sides are the same expression, so the assertion is true independent of the code under test. `assert f(x) == f(x)` is excluded: that's testing that `f` is deterministic, not a tautology. |
-| `DUPLICATE_ASSERT` | warn | Two `assert` statements that are true source-adjacent siblings (nothing else between them) with identical (whitespace-normalized) text. Not flagged if anything sits between them — re-checking an unchanged invariant after a further action is normal test structure, not duplication. |
+| `DUPLICATE_ASSERT` | warn | Two `assert` statements that are true source-adjacent siblings (nothing else between them) with identical (whitespace-normalized) text. Not flagged when the assert contains a call: repeating it re-invokes the call, which checks idempotence or caching rather than duplicating a check. Not flagged if anything sits between them — re-checking an unchanged invariant after a further action is normal test structure, not duplication. |
 
 Calibrated against a real ~130-file production Python test suite: the first
 pass (before the exemptions above existed) produced 76 findings; 61 of those

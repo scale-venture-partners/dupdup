@@ -168,7 +168,9 @@ pub fn check_no_assertions(fn_node: Node, source: &[u8]) -> Option<Violation> {
 /// block, no other statement between them — with identical (whitespace-
 /// normalized) text. The same assertion re-checked after an intervening
 /// statement is usually re-verifying an invariant held across a state
-/// change, not a copy-paste duplicate, so only true adjacency counts.
+/// change, not a copy-paste duplicate, so only true adjacency counts. An
+/// assert containing a call is skipped: repeating it re-invokes the call,
+/// which checks idempotence or caching rather than duplicating a check.
 #[must_use]
 pub fn check_duplicate_assert(fn_node: Node, source: &[u8]) -> Vec<Violation> {
     let mut out = Vec::new();
@@ -182,7 +184,7 @@ pub fn check_duplicate_assert(fn_node: Node, source: &[u8]) -> Vec<Violation> {
             }
             let prev_text = normalize(prev.utf8_text(source).unwrap_or(""));
             let cur_text = normalize(cur.utf8_text(source).unwrap_or(""));
-            if prev_text == cur_text {
+            if prev_text == cur_text && !contains_call(*cur) {
                 out.push(Violation {
                     file: String::new(),
                     line: cur.start_position().row + 1,

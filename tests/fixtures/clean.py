@@ -72,3 +72,8 @@ def app_with_rate_limit():
         return {"message": "ok"}
 
     return test_endpoint
+
+
+def test_repeated_call_checks_idempotence():
+    assert cache.get("k") == "v"
+    assert cache.get("k") == "v"
