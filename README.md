@@ -114,8 +114,9 @@ compared in whitespace-insensitive source form with literals kept. Two tests
 are only flagged as redundant if they cover the same code *and* make the
 same assertions. A test that asserts nothing never counts as redundant to
 one that does. dupdup reads each test's source from `--test-root` (the
-pytest rootdir, inside a git repo; default `.`), warns about tests it can't
-find and errors if it finds none. `--no-assertion-check` turns this off and
+pytest rootdir, inside a git repo; default `.`). A test whose source it can't
+find (for example one inherited from a base class outside the repo) is left
+out of the relations and counted in a warning, and it errors if it finds none. `--no-assertion-check` turns this off and
 compares line coverage alone.
 
 What survives is a test pair that runs the same code and checks the same

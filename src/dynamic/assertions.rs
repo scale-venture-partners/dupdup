@@ -57,6 +57,13 @@ pub fn load<'a>(
     out
 }
 
+/// Removes the tests whose source wasn't found. With no assertions to
+/// compare they could only be judged on line coverage, which can't tell them
+/// apart.
+pub fn drop_unresolved(tests: &mut Vec<TestCoverage>, fingerprints: &Fingerprints) {
+    tests.retain(|t| fingerprints.by_test.contains_key(&t.test_id));
+}
+
 /// Appends requirements to each test's bitset: one per distinct
 /// (file, assertion), and one per distinct (file, called function name). The
 /// calls bind an assertion to what it is asserted about, so `result is None`
@@ -212,6 +219,14 @@ mod tests {
         };
         augment(&mut tests, &fingerprints);
         assert!(crate::redundancy::analyze(&tests).is_empty());
+    }
+
+    #[test]
+    fn unresolved_tests_are_left_out_of_the_relations() {
+        let mut tests = vec![tc("f.py::test_a", &[1]), tc("f.py::inherited", &[1])];
+        drop_unresolved(&mut tests, &fps(&[("f.py::test_a", &["assert x"])]));
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].test_id, "f.py::test_a");
     }
 
     #[test]
