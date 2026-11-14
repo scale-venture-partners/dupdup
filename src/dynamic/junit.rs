@@ -17,6 +17,9 @@ pub struct JunitSummary {
     /// The `classname::name` of each test counted in `ran`, the form
     /// [`junit_key`] produces from a pytest node id.
     pub ran_tests: Vec<String>,
+    /// The `classname::name` of each test case that has a `<failure>` or an
+    /// `<error>` child.
+    pub failed_tests: Vec<String>,
 }
 
 /// The junit `classname::name` of a pytest node id:
@@ -91,6 +94,7 @@ fn parse(xml: &str) -> anyhow::Result<JunitSummary> {
     let mut in_testcase = false;
     let mut testcase_excluded = false;
     let mut current_key = String::new();
+    let mut current_failed = false;
 
     loop {
         match reader.read_event()? {
@@ -99,6 +103,7 @@ fn parse(xml: &str) -> anyhow::Result<JunitSummary> {
                 b"testcase" => {
                     in_testcase = true;
                     testcase_excluded = false;
+                    current_failed = false;
                     current_key = case_key(&e);
                 }
                 b"skipped" if in_testcase => {
@@ -107,8 +112,10 @@ fn parse(xml: &str) -> anyhow::Result<JunitSummary> {
                 }
                 b"error" if in_testcase => {
                     testcase_excluded = true;
+                    current_failed = true;
                     summary.errored += 1;
                 }
+                b"failure" if in_testcase => current_failed = true,
                 _ => {}
             },
             Event::Empty(e) => match e.local_name().as_ref() {
@@ -122,12 +129,17 @@ fn parse(xml: &str) -> anyhow::Result<JunitSummary> {
                 }
                 b"error" if in_testcase => {
                     testcase_excluded = true;
+                    current_failed = true;
                     summary.errored += 1;
                 }
+                b"failure" if in_testcase => current_failed = true,
                 _ => {}
             },
             Event::End(e) => {
                 if e.local_name().as_ref() == b"testcase" {
+                    if current_failed {
+                        summary.failed_tests.push(current_key.clone());
+                    }
                     if !testcase_excluded {
                         summary.ran += 1;
                         summary.ran_tests.push(std::mem::take(&mut current_key));
@@ -171,6 +183,7 @@ mod tests {
                 skipped: 1,
                 errored: 1,
                 ran_tests: vec!["t::passed".into(), "t::failed".into()],
+                failed_tests: vec!["t::failed".into(), "t::errored".into()],
             }
         );
     }
@@ -192,5 +205,17 @@ mod tests {
         };
         let missing = tests_without_coverage(&summary, ["tests/test_a.py::test_x"]);
         assert_eq!(missing, vec!["tests.test_a::test_y"]);
+    }
+
+    #[test]
+    fn failed_tests_include_failures_and_errors_but_not_skips() {
+        let xml = r#"<testsuite>
+            <testcase classname="t" name="ok"/>
+            <testcase classname="t" name="bad"><failure message="x"/></testcase>
+            <testcase classname="t" name="broken"><error message="y"/></testcase>
+            <testcase classname="t" name="skip"><skipped/></testcase>
+        </testsuite>"#;
+        let s = parse(xml).unwrap();
+        assert_eq!(s.failed_tests, vec!["t::bad", "t::broken"]);
     }
 }
