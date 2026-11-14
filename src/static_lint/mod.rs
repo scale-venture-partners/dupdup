@@ -158,10 +158,20 @@ pub fn check_file_with_helpers(
     let source_bytes = source.as_bytes();
     let lines: Vec<&str> = source.lines().collect();
     let mut out = Vec::new();
+    let mut shapes: std::collections::BTreeMap<String, Vec<(String, usize)>> = Default::default();
 
     for fn_node in find_test_functions(tree.root_node(), source_bytes) {
         let name = test_name(fn_node, source_bytes).to_string();
         let mut found = Vec::new();
+
+        if config.clone_test.enabled {
+            if let Some(shape) = rules::clone_shape(fn_node, source_bytes) {
+                shapes
+                    .entry(shape)
+                    .or_default()
+                    .push((name.clone(), fn_node.start_position().row + 1));
+            }
+        }
 
         found.extend(
             rules::check_no_assertions(fn_node, source_bytes, helpers).filter(|v| {
@@ -184,6 +194,24 @@ pub fn check_file_with_helpers(
             v.test_name.clone_from(&name);
         }
         out.extend(found);
+    }
+
+    for mut group in shapes.into_values().filter(|g| g.len() > 1) {
+        group.sort_by_key(|(_, line)| *line);
+        let (first, line) = group[0].clone();
+        let others: Vec<&str> = group[1..].iter().map(|(n, _)| n.as_str()).collect();
+        out.push(Violation {
+            file: path.to_string(),
+            line,
+            severity: rules::Severity::Warn,
+            rule: "CLONE_TEST",
+            test_name: first,
+            message: format!(
+                "same body as {} other test(s) apart from literals ({}) — a parametrize candidate",
+                others.len(),
+                others.join(", ")
+            ),
+        });
     }
 
     // `NO_ASSERTIONS_SMOKE` split off `NO_ASSERTIONS`, so an existing
@@ -344,5 +372,48 @@ mod tests {
             .any(|s| s.contains("raises") && s.contains("f ( )")));
         assert!(a.iter().any(|s| s == "check ( 1 )"));
         assert_eq!(fps["test_a"].calls, vec!["check", "f", "raises"]);
+    }
+
+    #[test]
+    fn tests_that_differ_only_in_literals_are_one_clone_group() {
+        let source = "def test_a():\n    r = f('x', 1)\n    assert r == 2\n\ndef test_b():\n    r = f('y', 3)\n    assert r == 4\n\ndef test_c():\n    r = g('y', 3)\n    assert r == 4\n";
+        let v = check_file("f.py", source, &Config::default()).unwrap();
+        let clones: Vec<_> = v.iter().filter(|v| v.rule == "CLONE_TEST").collect();
+        assert_eq!(clones.len(), 1);
+        assert_eq!(clones[0].test_name, "test_a");
+        assert!(clones[0].message.contains("test_b") && !clones[0].message.contains("test_c"));
+    }
+
+    #[test]
+    fn a_parametrized_test_is_not_a_clone() {
+        let source = "@pytest.mark.parametrize('x', [1])\ndef test_a(x):\n    r = f(x, 1)\n    assert r == 2\n\n@pytest.mark.parametrize('x', [1])\ndef test_b(x):\n    r = f(x, 1)\n    assert r == 2\n";
+        let v = check_file("f.py", source, &Config::default()).unwrap();
+        assert!(v.iter().all(|v| v.rule != "CLONE_TEST"));
+    }
+
+    #[test]
+    fn a_tiny_body_is_not_a_clone() {
+        let source = "def test_a():\n    assert f(1)\n\ndef test_b():\n    assert f(2)\n";
+        let v = check_file("f.py", source, &Config::default()).unwrap();
+        assert!(v.iter().all(|v| v.rule != "CLONE_TEST"));
+    }
+
+    #[test]
+    fn the_clone_rule_can_be_disabled_and_suppressed() {
+        let source = "def test_a():  # dupdup: ignore[CLONE_TEST]\n    r = f('x', 1)\n    assert r == 2\n\ndef test_b():\n    r = f('y', 3)\n    assert r == 4\n";
+        let v = check_file("f.py", source, &Config::default()).unwrap();
+        assert!(v.iter().all(|v| v.rule != "CLONE_TEST"));
+        let mut config = Config::default();
+        config.clone_test.enabled = false;
+        let plain = source.replace("  # dupdup: ignore[CLONE_TEST]", "");
+        let v = check_file("f.py", &plain, &config).unwrap();
+        assert!(v.iter().all(|v| v.rule != "CLONE_TEST"));
+    }
+
+    #[test]
+    fn a_docstring_does_not_make_two_bodies_differ() {
+        let source = "def test_a():\n    \"one\"\n    r = f('x', 1)\n    assert r == 2\n\ndef test_b():\n    \"two\"\n    r = f('y', 3)\n    assert r == 4\n";
+        let v = check_file("f.py", source, &Config::default()).unwrap();
+        assert_eq!(v.iter().filter(|v| v.rule == "CLONE_TEST").count(), 1);
     }
 }
