@@ -93,6 +93,20 @@ impl Default for WeakAssertionsConfig {
     }
 }
 
+/// Settings for the `MOCK_ONLY_ASSERT` rule.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct MockOnlyAssertConfig {
+    /// Whether this rule runs at all.
+    pub enabled: bool,
+}
+
+impl Default for MockOnlyAssertConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 /// The full `[dupdup]` table of `dupdup.toml`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -111,6 +125,9 @@ pub struct Config {
     /// `TAUTOLOGICAL_ASSERT` rule settings.
     #[serde(rename = "tautological_assert")]
     pub tautological_assert: TautologicalAssertConfig,
+    /// `MOCK_ONLY_ASSERT` rule settings.
+    #[serde(rename = "mock_only_assert")]
+    pub mock_only_assert: MockOnlyAssertConfig,
     /// `WEAK_ASSERTIONS` rule settings.
     #[serde(rename = "weak_assertions")]
     pub weak_assertions: WeakAssertionsConfig,
