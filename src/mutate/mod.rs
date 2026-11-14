@@ -181,21 +181,28 @@ struct PreparedSource {
 /// as `COVERS_NOTHING`). Only `killers` are credited with `mutant_id`. A
 /// test that never ran against an evaluated mutant gets no entry: "this test
 /// could not have killed anything" isn't established for it.
-fn credit(
-    kills: &mut HashMap<String, Vec<String>>,
-    candidates: &[String],
-    killers: &[String],
-    mutant_id: &str,
-) {
+fn credit(matrix: &mut KillMatrix, candidates: &[String], killers: &[String], mutant_id: &str) {
     for t in candidates {
-        kills.entry(t.clone()).or_default();
+        matrix.tests.entry(t.clone()).or_default();
+        *matrix.evaluated.entry(t.clone()).or_default() += 1;
     }
     for t in killers {
-        kills
+        matrix
+            .tests
             .entry(t.clone())
             .or_default()
             .push(mutant_id.to_string());
     }
+}
+
+/// What `collect` produces: the mutants each test killed, and how many
+/// mutants it was run against.
+#[derive(Debug, Default)]
+pub struct KillMatrix {
+    /// Killed mutant ids per test (an empty list: ran, killed none).
+    pub tests: HashMap<String, Vec<String>>,
+    /// Mutants each test was a candidate for, among those evaluated.
+    pub evaluated: HashMap<String, usize>,
 }
 
 /// Collects a kill matrix by mutating `sources` one at a time, restricting
@@ -217,7 +224,7 @@ pub fn collect(
     sources: &[PathBuf],
     coverage: &LineCoverage,
     cfg: &RunConfig,
-) -> anyhow::Result<HashMap<String, Vec<String>>> {
+) -> anyhow::Result<KillMatrix> {
     anyhow::ensure!(!cfg.pytest_cmd.is_empty(), "pytest_cmd must not be empty");
 
     let mut prepared = Vec::with_capacity(sources.len());
@@ -274,7 +281,7 @@ pub fn collect(
     let all_candidates: Vec<String> = all_candidates.into_iter().collect();
     verify_node_ids(&cfg.pytest_cmd, &all_candidates)?;
 
-    let mut kills: HashMap<String, Vec<String>> = HashMap::new();
+    let mut kills = KillMatrix::default();
     let (mut killed, mut survived, mut no_coverage, mut inconclusive) =
         (0usize, 0usize, 0usize, 0usize);
 
@@ -348,27 +355,28 @@ mod tests {
 
     #[test]
     fn credit_keeps_a_candidate_that_killed_nothing_with_an_empty_list() {
-        let mut kills = HashMap::new();
+        let mut kills = KillMatrix::default();
         let candidates = vec!["t.py::test_a".to_string(), "t.py::test_b".to_string()];
         credit(&mut kills, &candidates, &["t.py::test_a".to_string()], "m1");
-        assert_eq!(kills["t.py::test_a"], vec!["m1"]);
-        assert!(kills["t.py::test_b"].is_empty());
+        assert_eq!(kills.tests["t.py::test_a"], vec!["m1"]);
+        assert!(kills.tests["t.py::test_b"].is_empty());
     }
 
     #[test]
     fn credit_for_a_survivor_still_registers_every_candidate() {
-        let mut kills = HashMap::new();
+        let mut kills = KillMatrix::default();
         credit(&mut kills, &["t.py::test_a".to_string()], &[], "m1");
-        assert!(kills["t.py::test_a"].is_empty());
+        assert!(kills.tests["t.py::test_a"].is_empty());
     }
 
     #[test]
     fn credit_accumulates_kills_across_mutants() {
-        let mut kills = HashMap::new();
+        let mut kills = KillMatrix::default();
         let a = vec!["t.py::test_a".to_string()];
         credit(&mut kills, &a, &a, "m1");
         credit(&mut kills, &a, &a, "m2");
-        assert_eq!(kills["t.py::test_a"], vec!["m1", "m2"]);
+        assert_eq!(kills.tests["t.py::test_a"], vec!["m1", "m2"]);
+        assert_eq!(kills.evaluated["t.py::test_a"], 2);
     }
 
     #[test]

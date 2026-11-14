@@ -485,6 +485,7 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
                             test_id,
                             related: Vec::new(),
                             other_matches: 0,
+                            evaluated: None,
                         }),
                 );
             }
@@ -502,6 +503,7 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
                         test_id,
                         related: Vec::new(),
                         other_matches: 0,
+                        evaluated: None,
                     }),
             );
         }
@@ -521,6 +523,11 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
             redundancy::universe_size(&loaded.tests),
             loaded.tests.len()
         );
+        for f in &mut findings {
+            if f.kind == redundancy::RedundancyKind::CoversNothing {
+                f.evaluated = loaded.evaluated.get(&f.test_id).copied();
+            }
+        }
         if redundancy::is_sparse(&loaded.tests) && !allow_sparse_kill_matrix {
             eprintln!(
                 "warning: too few killed mutants to tell tests apart; reporting only \
@@ -537,6 +544,7 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
                         test_id,
                         related: Vec::new(),
                         other_matches: 0,
+                        evaluated: None,
                     }),
             );
         }
@@ -584,8 +592,8 @@ fn run_mutate(
         timeout: Duration::from_secs(timeout_secs),
         extreme,
     };
-    let kills = mutate::collect(&repo_root, sources, &coverage, &cfg)?;
-    output::print_kill_matrix_json(&kills)
+    let matrix = mutate::collect(&repo_root, sources, &coverage, &cfg)?;
+    output::print_kill_matrix_json(&matrix)
 }
 
 #[cfg(test)]

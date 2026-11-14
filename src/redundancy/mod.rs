@@ -63,6 +63,10 @@ pub struct RedundancyFinding {
     /// `SubsumedCoverage`, and every other duplicate is named for
     /// `DuplicateCoverage` already.
     pub other_matches: usize,
+    /// For a `CoversNothing` finding from a kill matrix that records it: how
+    /// many mutants this test was run against. Without it, "killed none"
+    /// could mean 1 mutant or 100.
+    pub evaluated: Option<usize>,
 }
 
 /// Pytest's parametrize suffix (`test_foo[1-2]`). Siblings in the same
@@ -175,6 +179,7 @@ pub fn analyze_scoped(
                 test_id: test.test_id.clone(),
                 related: Vec::new(),
                 other_matches: 0,
+                evaluated: None,
             });
         }
     }
@@ -213,6 +218,7 @@ pub fn analyze_scoped(
                     test_id: tests[i].test_id.clone(),
                     related: twins.iter().map(|&j| tests[j].test_id.clone()).collect(),
                     other_matches: 0,
+                    evaluated: None,
                 });
             }
         }
@@ -223,6 +229,7 @@ pub fn analyze_scoped(
                 test_id: tests[i].test_id.clone(),
                 related: vec![tests[k].test_id.clone()],
                 other_matches: supersets - 1,
+                evaluated: None,
             });
         }
     }
@@ -240,6 +247,7 @@ pub fn analyze_scoped(
                 test_id: test.test_id.clone(),
                 related: cover.iter().map(|&j| tests[j].test_id.clone()).collect(),
                 other_matches: 0,
+                evaluated: None,
             });
         }
     }

@@ -10,6 +10,9 @@ use std::path::Path;
 #[derive(Debug, Deserialize)]
 struct KillMatrixReport {
     tests: HashMap<String, Vec<String>>,
+    /// Optional: per test, how many mutants it was run against.
+    #[serde(default)]
+    evaluated: HashMap<String, usize>,
 }
 
 /// A kill matrix's per-test killed-mutant coverage, ready for
@@ -17,6 +20,8 @@ struct KillMatrixReport {
 pub struct LoadedKillMatrix {
     /// One entry per test id in the kill matrix.
     pub tests: Vec<TestCoverage>,
+    /// How many mutants each test was run against, when the matrix says.
+    pub evaluated: HashMap<String, usize>,
 }
 
 /// Loads a `{"tests": {"<test id>": ["<mutant id>", ...]}}` kill-matrix
@@ -54,7 +59,10 @@ pub fn load(path: &Path) -> anyhow::Result<LoadedKillMatrix> {
         })
         .collect();
 
-    Ok(LoadedKillMatrix { tests })
+    Ok(LoadedKillMatrix {
+        tests,
+        evaluated: report.evaluated,
+    })
 }
 
 #[cfg(test)]
@@ -77,5 +85,23 @@ mod tests {
             .collect();
         assert_eq!(by_id["test_a"], by_id["test_b"]);
         assert_ne!(by_id["test_a"], by_id["test_c"]);
+    }
+
+    #[test]
+    fn evaluated_counts_are_read_when_present_and_optional_otherwise() {
+        let dir = tempfile::tempdir().unwrap();
+        let with = dir.path().join("with.json");
+        std::fs::write(
+            &with,
+            r#"{"tests": {"t.py::a": [], "t.py::b": ["m1"]}, "evaluated": {"t.py::a": 3}}"#,
+        )
+        .unwrap();
+        let loaded = load(&with).unwrap();
+        assert_eq!(loaded.evaluated["t.py::a"], 3);
+        assert!(!loaded.evaluated.contains_key("t.py::b"));
+
+        let without = dir.path().join("without.json");
+        std::fs::write(&without, r#"{"tests": {"t.py::a": []}}"#).unwrap();
+        assert!(load(&without).unwrap().evaluated.is_empty());
     }
 }
