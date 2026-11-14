@@ -259,6 +259,12 @@ into a warning once you've confirmed which cause applies.
 dupdup analyze --kill-matrix-json kills.json
 ```
 
+Unlike the coverage source, the mutation source compares tests across files:
+two tests that kill the same mutants are alike wherever they live (a route
+test and a service test of the same function, say), and mutants are tied to
+the code under test, not to shared infrastructure the way covered lines are.
+Ids that aren't pytest node ids were already compared across the whole set.
+
 If the matrix has fewer killed mutants than half the number of tests, only
 `COVERS_NOTHING` is reported: over so few mutants, tests that kill the same
 one or two look interchangeable because the universe can't tell them apart.

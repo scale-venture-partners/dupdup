@@ -114,12 +114,25 @@ fn is_subset(a: &FixedBitSet, b: &FixedBitSet) -> bool {
 /// id>` string); same-file scoping is a pytest-specific policy, so an id
 /// set that doesn't look like pytest node ids falls back to comparing
 /// every pair rather than silently scoping every pair out.
-fn comparable(a: &str, b: &str) -> bool {
+/// Which tests may be compared with each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Only tests in the same file (when ids are pytest node ids). Right for
+    /// line coverage, where tests in different files share infrastructure
+    /// lines and are not alike.
+    SameFile,
+    /// Any two tests. Right for a kill matrix, where two tests that kill the
+    /// same mutants of the same code are alike wherever they live (a route
+    /// test and a service test, say).
+    Anywhere,
+}
+
+fn comparable(a: &str, b: &str, scope: Scope) -> bool {
     if base_test_name(a) == base_test_name(b) {
         return false;
     }
-    match (a.find("::"), b.find("::")) {
-        (Some(_), Some(_)) => test_file(a) == test_file(b),
+    match (scope, a.find("::"), b.find("::")) {
+        (Scope::SameFile, Some(_), Some(_)) => test_file(a) == test_file(b),
         _ => true,
     }
 }
@@ -132,12 +145,24 @@ pub fn analyze(tests: &[TestCoverage]) -> Vec<RedundancyFinding> {
     analyze_with(tests, true)
 }
 
-/// [`analyze`], with the `ContributesNothingUnique` relation optional. It is
-/// the weakest of the four: each requirement can be covered by a different
-/// peer, so "every requirement is covered somewhere else" rarely means the
-/// test's scenario is covered.
+/// [`analyze`] with the union relation optional, comparing tests in the same
+/// file only.
 #[must_use]
 pub fn analyze_with(tests: &[TestCoverage], union_relation: bool) -> Vec<RedundancyFinding> {
+    analyze_scoped(tests, union_relation, Scope::SameFile)
+}
+
+/// [`analyze`], with the `ContributesNothingUnique` relation optional and the
+/// comparison `scope` explicit. The union relation is the weakest of the
+/// four: each requirement can be covered by a different peer, so "every
+/// requirement is covered somewhere else" rarely means the test's scenario
+/// is covered.
+#[must_use]
+pub fn analyze_scoped(
+    tests: &[TestCoverage],
+    union_relation: bool,
+    scope: Scope,
+) -> Vec<RedundancyFinding> {
     let n = tests.len();
     let mut findings = Vec::new();
     let mut explained: HashSet<usize> = HashSet::new();
@@ -165,7 +190,7 @@ pub fn analyze_with(tests: &[TestCoverage], union_relation: bool) -> Vec<Redunda
         let mut supersets = 0usize;
         let mut tightest: Option<usize> = None;
         for j in 0..n {
-            if i == j || !comparable(&tests[i].test_id, &tests[j].test_id) {
+            if i == j || !comparable(&tests[i].test_id, &tests[j].test_id, scope) {
                 continue;
             }
             if tests[i].bits == tests[j].bits {
@@ -207,7 +232,7 @@ pub fn analyze_with(tests: &[TestCoverage], union_relation: bool) -> Vec<Redunda
             continue;
         }
         let peers: Vec<usize> = (0..n)
-            .filter(|&j| j != i && comparable(&tests[j].test_id, &test.test_id))
+            .filter(|&j| j != i && comparable(&tests[j].test_id, &test.test_id, scope))
             .collect();
         if let Some(cover) = small_cover(tests, i, &peers) {
             findings.push(RedundancyFinding {
@@ -291,14 +316,22 @@ fn small_cover(tests: &[TestCoverage], target: usize, peers: &[usize]) -> Option
 /// lines and check different things.
 #[must_use]
 pub fn removable_set(tests: &[TestCoverage]) -> Vec<String> {
+    removable_set_scoped(tests, Scope::SameFile)
+}
+
+/// [`removable_set`] with the scope explicit: with [`Scope::Anywhere`] every
+/// test is in one pool, so a test in one file can be covered by tests in
+/// others.
+#[must_use]
+pub fn removable_set_scoped(tests: &[TestCoverage], scope: Scope) -> Vec<String> {
     let mut by_scope: std::collections::BTreeMap<&str, Vec<usize>> = Default::default();
     for (i, t) in tests.iter().enumerate() {
-        let scope = if t.test_id.contains("::") {
+        let pool = if scope == Scope::SameFile && t.test_id.contains("::") {
             test_file(&t.test_id)
         } else {
             ""
         };
-        by_scope.entry(scope).or_default().push(i);
+        by_scope.entry(pool).or_default().push(i);
     }
 
     let mut removable = Vec::new();
@@ -723,5 +756,21 @@ mod tests {
     #[test]
     fn no_tests_is_not_sparse() {
         assert!(!is_sparse(&[]));
+    }
+
+    #[test]
+    fn anywhere_scope_compares_tests_in_different_files() {
+        let tests = vec![tc("a.py::test_x", &[1, 2]), tc("b.py::test_y", &[1, 2])];
+        assert!(analyze_scoped(&tests, true, Scope::SameFile).is_empty());
+        let findings = analyze_scoped(&tests, true, Scope::Anywhere);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].kind, RedundancyKind::DuplicateCoverage);
+    }
+
+    #[test]
+    fn removable_set_anywhere_pools_files() {
+        let tests = vec![tc("a.py::test_x", &[1]), tc("b.py::test_y", &[1])];
+        assert!(removable_set_scoped(&tests, Scope::SameFile).is_empty());
+        assert_eq!(removable_set_scoped(&tests, Scope::Anywhere).len(), 1);
     }
 }
