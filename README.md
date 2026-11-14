@@ -49,6 +49,7 @@ friendly, same shape as [windbag](https://github.com/scale-venture-partners/wind
 | `TAUTOLOGICAL_ASSERT` | error | `assert x == x` where neither side contains a call — both sides are the same expression, so the assertion is true independent of the code under test. `assert f(x) == f(x)` is excluded: that's testing that `f` is deterministic, not a tautology. |
 | `CLONE_TEST` | warn | Two or more tests in one file whose bodies are identical once every string and number is replaced by one placeholder: they run the same code and differ only in literal values. Reported once per group, from the first test, naming the rest. Skips tests that are already `parametrize`d and bodies under 8 tokens. A parametrize candidate, not a deletion. |
 | `WEAK_ASSERTIONS` | warn | A test whose every `assert` is a `None`, type, length or truthiness check (`x is not None`, `isinstance(...)`, `len(x) > 0`, a bare `assert x`), with no assertion-style call, asserting helper or `pytest.raises`. It passes for most wrong results. HTTP status-only checks are not flagged. |
+| `MOCK_ONLY_ASSERT` | warn | A test that creates a mock itself (`m = Mock()`, `AsyncMock`, `MagicMock`, `create_autospec`, `with patch(...) as m`), calls that mock directly, and asserts only on mocks. It checks its own wiring. A mock called by the code under test is not flagged. |
 | `DUPLICATE_ASSERT` | warn | Two `assert` statements that are true source-adjacent siblings (nothing else between them) with identical (whitespace-normalized) text. Not flagged when the assert contains a call: repeating it re-invokes the call, which checks idempotence or caching rather than duplicating a check. Not flagged if anything sits between them — re-checking an unchanged invariant after a further action is normal test structure, not duplication. |
 
 Calibrated against a real ~130-file production Python test suite: the first
@@ -376,10 +377,6 @@ every commit, run `analyze` in CI against a real coverage/mutation run.
 
 ## Planned, not yet built
 
-- Mock-only-assertion detection (every assertion in a test traces back to a
-  `Mock()`/`patch()` object the test itself configured — a different
-  question from whether a `mock.assert_*()` call counts as an assertion at
-  all, which `NO_ASSERTIONS` already handles).
 - Per-branch dynamic-context data for the coverage source (see the known
   limitation above) — needs a real design decision about whether that means
   parsing `coverage.py`'s internal SQLite schema directly, since the public
