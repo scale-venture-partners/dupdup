@@ -130,6 +130,12 @@ enum Commands {
         /// Per-invocation wall-clock budget, in seconds.
         #[arg(long, default_value_t = 30)]
         timeout_secs: u64,
+        /// Extreme mutation: one mutant per function, its whole body
+        /// replaced by a trivial value (`pass`, `None`, `0`, `""`, `[]`...).
+        /// Far fewer mutants than the point mutations, one per function, so
+        /// a kill matrix covers a whole package.
+        #[arg(long)]
+        extreme: bool,
     },
     /// Write a default dupdup.toml to the current directory
     Init,
@@ -177,7 +183,8 @@ fn main() -> anyhow::Result<()> {
             coverage_json,
             pytest_cmd,
             timeout_secs,
-        } => run_mutate(&sources, &coverage_json, &pytest_cmd, timeout_secs),
+            extreme,
+        } => run_mutate(&sources, &coverage_json, &pytest_cmd, timeout_secs, extreme),
         Commands::Init => run_init(),
     }
 }
@@ -564,6 +571,7 @@ fn run_mutate(
     coverage_json: &Path,
     pytest_cmd: &str,
     timeout_secs: u64,
+    extreme: bool,
 ) -> anyhow::Result<()> {
     let pytest_cmd: Vec<String> = pytest_cmd.split_whitespace().map(String::from).collect();
     anyhow::ensure!(!pytest_cmd.is_empty(), "--pytest-cmd must not be empty");
@@ -574,6 +582,7 @@ fn run_mutate(
     let cfg = mutate::RunConfig {
         pytest_cmd,
         timeout: Duration::from_secs(timeout_secs),
+        extreme,
     };
     let kills = mutate::collect(&repo_root, sources, &coverage, &cfg)?;
     output::print_kill_matrix_json(&kills)
