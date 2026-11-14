@@ -507,7 +507,8 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
 
     if let Some(km_path) = kill_matrix_json {
         let loaded = dynamic::killmatrix::load(km_path)?;
-        let mut findings = redundancy::analyze(&loaded.tests);
+        let mut findings =
+            redundancy::analyze_scoped(&loaded.tests, true, redundancy::Scope::Anywhere);
         eprintln!(
             "mutation: {} killed mutant(s) across {} test(s)",
             redundancy::universe_size(&loaded.tests),
@@ -522,7 +523,7 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
         }
         if removal_set {
             findings.extend(
-                redundancy::removable_set(&loaded.tests)
+                redundancy::removable_set_scoped(&loaded.tests, redundancy::Scope::Anywhere)
                     .into_iter()
                     .map(|test_id| redundancy::RedundancyFinding {
                         kind: redundancy::RedundancyKind::Removable,
