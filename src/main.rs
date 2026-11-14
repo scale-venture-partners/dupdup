@@ -44,6 +44,12 @@ enum Commands {
         /// `pytest --cov=<pkg> --cov-context=test` run
         #[arg(long)]
         coverage_json: Option<PathBuf>,
+        /// coverage.py's own data file (`.coverage`) from a
+        /// `pytest --cov=<pkg> --cov-branch --cov-context=test` run. Unlike
+        /// --coverage-json it keeps branch arcs, so two tests that run the
+        /// same lines but take different branches stay different.
+        #[arg(long, conflicts_with = "coverage_json")]
+        coverage_data: Option<PathBuf>,
         /// pytest `--junitxml` output from the same run as --coverage-json.
         /// Cross-checked against the test count coverage-json actually
         /// recorded contexts for, so a run missing context data for tests
@@ -128,6 +134,7 @@ fn main() -> anyhow::Result<()> {
         } => run_check(&paths, staged, all, json, &config),
         Commands::Analyze {
             coverage_json,
+            coverage_data,
             junit_xml,
             allow_incomplete_context,
             include_fixtures,
@@ -138,6 +145,7 @@ fn main() -> anyhow::Result<()> {
             json,
         } => run_analyze(&AnalyzeOptions {
             coverage_json: coverage_json.as_deref(),
+            coverage_data: coverage_data.as_deref(),
             junit_xml: junit_xml.as_deref(),
             allow_incomplete_context,
             include_fixtures,
@@ -388,6 +396,7 @@ fn add_assertions(tests: &mut [redundancy::TestCoverage], test_root: &Path) -> a
 /// Everything `dupdup analyze` was asked to do.
 struct AnalyzeOptions<'a> {
     coverage_json: Option<&'a Path>,
+    coverage_data: Option<&'a Path>,
     junit_xml: Option<&'a Path>,
     allow_incomplete_context: bool,
     include_fixtures: bool,
@@ -401,6 +410,7 @@ struct AnalyzeOptions<'a> {
 fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
     let AnalyzeOptions {
         coverage_json,
+        coverage_data,
         junit_xml,
         allow_incomplete_context,
         include_fixtures,
@@ -412,8 +422,12 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
     } = *opts;
     let mut reports = Vec::new();
 
-    if let Some(cov_path) = coverage_json {
-        let mut loaded = dynamic::coverage::load(cov_path, include_fixtures)?;
+    let loaded_coverage = match (coverage_json, coverage_data) {
+        (Some(p), _) => Some(dynamic::coverage::load(p, include_fixtures)?),
+        (None, Some(p)) => Some(dynamic::coverage::load_data(p, include_fixtures)?),
+        (None, None) => None,
+    };
+    if let Some(mut loaded) = loaded_coverage {
         if !no_assertion_check {
             add_assertions(&mut loaded.tests, test_root)?;
         }
@@ -485,7 +499,9 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
     }
 
     if reports.is_empty() {
-        anyhow::bail!("nothing to analyze: pass --coverage-json and/or --kill-matrix-json");
+        anyhow::bail!(
+            "nothing to analyze: pass --coverage-json, --coverage-data and/or --kill-matrix-json"
+        );
     }
 
     if json {

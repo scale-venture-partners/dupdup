@@ -206,6 +206,19 @@ python -m coverage json --show-contexts -o coverage.json
 dupdup analyze --coverage-json coverage.json --junit-xml junit.xml
 ```
 
+`--coverage-data` reads coverage.py's own data file instead of the JSON
+report, and keeps branch arcs when the run used `--cov-branch`:
+
+```bash
+COVERAGE_CORE=ctrace python -m pytest --cov=mypkg --cov-branch --cov-context=test --junitxml=junit.xml
+dupdup analyze --coverage-data .coverage --junit-xml junit.xml
+```
+
+With arcs, each requirement is a `(from line, to line)` pair, so two tests
+that run the same lines but take different branches no longer look the same.
+The JSON report can't express that, even with branch coverage on. Without
+`--cov-branch` the data file gives line coverage, same as the JSON.
+
 `COVERAGE_CORE=ctrace` is recommended on Python 3.12+: `coverage.py`'s
 default `sysmon` core silently drops dynamic-context data for some tests
 instead of erroring. `--junit-xml` lets dupdup cross-check the number of

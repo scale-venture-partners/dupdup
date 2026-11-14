@@ -26,6 +26,7 @@ toml = "0.8"
 anyhow = "1"
 quick-xml = "0.36"
 gix = { version = "0.87.1", features = ["status"] }
+rusqlite = { version = "0.42.0", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"
