@@ -379,7 +379,10 @@ fn check_context_completeness(
 /// all-unresolved run is an error: it almost always means a wrong
 /// `--test-root`, and silently falling back to coverage alone would bring
 /// back the noise this check exists to remove.
-fn add_assertions(tests: &mut [redundancy::TestCoverage], test_root: &Path) -> anyhow::Result<()> {
+fn add_assertions(
+    tests: &mut Vec<redundancy::TestCoverage>,
+    test_root: &Path,
+) -> anyhow::Result<()> {
     if tests.is_empty() {
         return Ok(());
     }
@@ -399,12 +402,14 @@ fn add_assertions(tests: &mut [redundancy::TestCoverage], test_root: &Path) -> a
     }
     if fingerprints.unresolved > 0 {
         eprintln!(
-            "warning: {} of {} tests' source could not be found under {}; they are compared \
-             on line coverage alone",
+            "warning: {} of {} tests' source could not be found under {} (for example tests \
+             inherited from a base class outside the repo); they are left out of the redundancy \
+             relations, since line coverage alone can't tell them apart",
             fingerprints.unresolved,
             tests.len(),
             rel.display()
         );
+        dynamic::assertions::drop_unresolved(tests, &fingerprints);
     }
     dynamic::assertions::augment(tests, &fingerprints);
     Ok(())
@@ -449,6 +454,7 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
         (None, None) => None,
     };
     if let Some(mut loaded) = loaded_coverage {
+        let all_ids: Vec<String> = loaded.tests.iter().map(|t| t.test_id.clone()).collect();
         if !no_assertion_check {
             add_assertions(&mut loaded.tests, test_root)?;
         }
@@ -461,7 +467,9 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
                     &summary,
                     allow_incomplete_context,
                 )?;
-                let analyzed = loaded.tests.iter().map(|t| t.test_id.as_str());
+                // Every test with coverage counts as covered, including ones
+                // left out of the relations because their source wasn't found.
+                let analyzed = all_ids.iter().map(String::as_str);
                 findings.extend(
                     dynamic::junit::tests_without_coverage(&summary, analyzed)
                         .into_iter()
