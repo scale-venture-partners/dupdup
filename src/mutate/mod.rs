@@ -16,7 +16,7 @@ pub mod operators;
 use crate::dynamic::coverage::LineCoverage;
 use crate::git;
 use anyhow::Context;
-use operators::{find_mutants, Mutant};
+use operators::{find_extreme_mutants, find_mutants, Mutant};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -34,6 +34,9 @@ pub struct RunConfig {
     /// bound can hang the process it's applied to, and there's no way to
     /// tell "slow" from "infinite" from the outside — this is a hard cutoff.
     pub timeout: Duration,
+    /// One mutant per function (the body replaced by a trivial value)
+    /// instead of the point mutations.
+    pub extreme: bool,
 }
 
 enum Outcome {
@@ -252,7 +255,11 @@ pub fn collect(
 
         let original = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", source.display()))?;
-        let mutants = find_mutants(&key, &original)?;
+        let mutants = if cfg.extreme {
+            find_extreme_mutants(&key, &original)?
+        } else {
+            find_mutants(&key, &original)?
+        };
         for mutant in &mutants {
             all_candidates.extend(coverage.tests_covering(&key, mutant.candidate_lines.clone()));
         }
