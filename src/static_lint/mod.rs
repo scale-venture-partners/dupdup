@@ -5,6 +5,11 @@
 /// `TAUTOLOGICAL_ASSERT`) plus the `Violation`/`Severity` types they emit.
 pub mod rules;
 
+/// The index of function names that assert, used to see through helpers.
+pub mod helpers;
+
+pub use helpers::AssertingHelpers;
+
 use crate::config::Config;
 use rules::Violation;
 use tree_sitter::{Node, Parser, Tree};
@@ -78,13 +83,30 @@ fn is_suppressed(lines: &[&str], line_1indexed: usize, rule: &str) -> bool {
             .is_some_and(|l| check(l))
 }
 
-/// Runs every enabled static rule over each `test_*` function in `source`,
-/// tags each violation with `path`, and drops any suppressed by a
-/// `# dupdup: ignore[RULE]` comment.
+/// [`check_file_with_helpers`] with an index built from `source` alone, so
+/// a helper defined in the same file is seen through but one in another
+/// file isn't.
 ///
 /// # Errors
 /// Returns an error if `source` can't be parsed as Python.
 pub fn check_file(path: &str, source: &str, config: &Config) -> anyhow::Result<Vec<Violation>> {
+    let helpers = AssertingHelpers::build([source], &config.no_assertions.helpers);
+    check_file_with_helpers(path, source, config, &helpers)
+}
+
+/// Runs every enabled static rule over each `test_*` function in `source`,
+/// tags each violation with `path`, and drops any suppressed by a
+/// `# dupdup: ignore[RULE]` comment. `helpers` says which called functions
+/// count as assertions.
+///
+/// # Errors
+/// Returns an error if `source` can't be parsed as Python.
+pub fn check_file_with_helpers(
+    path: &str,
+    source: &str,
+    config: &Config,
+    helpers: &AssertingHelpers,
+) -> anyhow::Result<Vec<Violation>> {
     let tree = parse(source)?;
     let source_bytes = source.as_bytes();
     let lines: Vec<&str> = source.lines().collect();
@@ -94,9 +116,15 @@ pub fn check_file(path: &str, source: &str, config: &Config) -> anyhow::Result<V
         let name = test_name(fn_node, source_bytes).to_string();
         let mut found = Vec::new();
 
-        if config.no_assertions.enabled {
-            found.extend(rules::check_no_assertions(fn_node, source_bytes));
-        }
+        found.extend(
+            rules::check_no_assertions(fn_node, source_bytes, helpers).filter(|v| {
+                if v.rule == "NO_ASSERTIONS" {
+                    config.no_assertions.enabled
+                } else {
+                    config.no_assertions_smoke.enabled
+                }
+            }),
+        );
         if config.duplicate_assert.enabled {
             found.extend(rules::check_duplicate_assert(fn_node, source_bytes));
         }
@@ -111,7 +139,13 @@ pub fn check_file(path: &str, source: &str, config: &Config) -> anyhow::Result<V
         out.extend(found);
     }
 
-    out.retain(|v| !is_suppressed(&lines, v.line, v.rule));
+    // `NO_ASSERTIONS_SMOKE` split off `NO_ASSERTIONS`, so an existing
+    // `ignore[NO_ASSERTIONS]` keeps suppressing it.
+    out.retain(|v| {
+        let smoke = v.rule == "NO_ASSERTIONS_SMOKE";
+        !(is_suppressed(&lines, v.line, v.rule)
+            || (smoke && is_suppressed(&lines, v.line, "NO_ASSERTIONS")))
+    });
     Ok(out)
 }
 
@@ -158,7 +192,7 @@ mod tests {
 
     #[test]
     fn a_disabled_rule_is_not_reported() {
-        let source = "def test_never_fails():\n    compute_something()\n";
+        let source = "def test_never_fails():\n    pass\n";
         let mut config = Config::default();
         config.no_assertions.enabled = false;
         let violations = check_file("f.py", source, &config).unwrap();
@@ -167,12 +201,61 @@ mod tests {
 
     #[test]
     fn an_enabled_rule_still_fires_when_others_are_disabled() {
-        let source = "def test_never_fails():\n    compute_something()\n";
+        let source = "def test_never_fails():\n    pass\n";
         let mut config = Config::default();
         config.duplicate_assert.enabled = false;
         config.tautological_assert.enabled = false;
         let violations = check_file("f.py", source, &config).unwrap();
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].rule, "NO_ASSERTIONS");
+    }
+
+    #[test]
+    fn a_call_only_body_is_a_smoke_warning_not_an_error() {
+        let source = "def test_does_not_raise():\n    cache.set('k', 'v')\n";
+        let violations = check_file("f.py", source, &Config::default()).unwrap();
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].rule, "NO_ASSERTIONS_SMOKE");
+        assert_eq!(violations[0].severity, rules::Severity::Warn);
+    }
+
+    #[test]
+    fn the_smoke_rule_can_be_disabled_alone() {
+        let source =
+            "def test_does_not_raise():\n    cache.set('k', 'v')\n\ndef test_stub():\n    pass\n";
+        let mut config = Config::default();
+        config.no_assertions_smoke.enabled = false;
+        let violations = check_file("f.py", source, &config).unwrap();
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].rule, "NO_ASSERTIONS");
+    }
+
+    #[test]
+    fn a_helper_in_the_same_file_counts_as_an_assertion() {
+        let source = "def check_total(o):\n    assert o.total == 10\n\ndef test_a():\n    check_total(make())\n";
+        assert!(check_file("f.py", source, &Config::default())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_helper_in_another_file_counts_when_it_is_indexed() {
+        let helper_src = "def verify(h):\n    assert h\n";
+        let test_src = "def test_a():\n    verify(make())\n";
+        let config = Config::default();
+        let without = check_file("t.py", test_src, &config).unwrap();
+        assert_eq!(without.len(), 1);
+        let helpers = AssertingHelpers::build([helper_src, test_src], &[]);
+        assert!(check_file_with_helpers("t.py", test_src, &config, &helpers)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_configured_helper_name_counts_as_an_assertion() {
+        let source = "def test_a():\n    external_check(make())\n";
+        let mut config = Config::default();
+        config.no_assertions.helpers = vec!["external_check".to_string()];
+        assert!(check_file("t.py", source, &config).unwrap().is_empty());
     }
 }

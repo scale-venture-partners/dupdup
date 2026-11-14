@@ -9,9 +9,29 @@ use std::path::Path;
 pub struct NoAssertionsConfig {
     /// Whether this rule runs at all.
     pub enabled: bool,
+    /// Extra function names to treat as asserting helpers, for helpers the
+    /// static index can't see (defined outside the repo, or generated).
+    pub helpers: Vec<String>,
 }
 
 impl Default for NoAssertionsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            helpers: Vec::new(),
+        }
+    }
+}
+
+/// Settings for the `NO_ASSERTIONS_SMOKE` rule.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct NoAssertionsSmokeConfig {
+    /// Whether this rule runs at all.
+    pub enabled: bool,
+}
+
+impl Default for NoAssertionsSmokeConfig {
     fn default() -> Self {
         Self { enabled: true }
     }
@@ -54,6 +74,9 @@ pub struct Config {
     /// `NO_ASSERTIONS` rule settings.
     #[serde(rename = "no_assertions")]
     pub no_assertions: NoAssertionsConfig,
+    /// `NO_ASSERTIONS_SMOKE` rule settings.
+    #[serde(rename = "no_assertions_smoke")]
+    pub no_assertions_smoke: NoAssertionsSmokeConfig,
     /// `DUPLICATE_ASSERT` rule settings.
     #[serde(rename = "duplicate_assert")]
     pub duplicate_assert: DuplicateAssertConfig,

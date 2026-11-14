@@ -58,6 +58,18 @@ enum Commands {
         /// benign (see the error message this would otherwise print).
         #[arg(long)]
         allow_incomplete_context: bool,
+        /// Count lines run by a test's fixtures (`setup`/`teardown`
+        /// phases) as that test's coverage. Off by default: fixture lines
+        /// aren't exercised by the test body, and a shared fixture makes
+        /// unrelated tests look like subsets of each other.
+        #[arg(long)]
+        include_fixtures: bool,
+        /// Also report a jointly coverage-preserving set of tests
+        /// (`REMOVABLE`) that can all be removed at once without shrinking
+        /// any file's coverage. Preserves coverage, not behaviour: two tests
+        /// can cover the same lines and check different things.
+        #[arg(long)]
+        removal_set: bool,
         /// Test-to-killed-mutant JSON (see `dupdup::dynamic::killmatrix` for
         /// the schema). No upstream tool produces this yet.
         #[arg(long)]
@@ -108,12 +120,16 @@ fn main() -> anyhow::Result<()> {
             coverage_json,
             junit_xml,
             allow_incomplete_context,
+            include_fixtures,
+            removal_set,
             kill_matrix_json,
             json,
         } => run_analyze(
             coverage_json.as_deref(),
             junit_xml.as_deref(),
             allow_incomplete_context,
+            include_fixtures,
+            removal_set,
             kill_matrix_json.as_deref(),
             json,
         ),
@@ -220,6 +236,17 @@ fn run_check(
         } else {
             git::all_files(&root)?
         };
+        // Helpers can live in any tracked Python file (conftest.py, a shared
+        // module), not only test files, so index every one of them.
+        let index_sources: Vec<String> = git::all_files(&root)?
+            .iter()
+            .filter(|p| p.extension().is_some_and(|e| e == "py"))
+            .filter_map(|p| std::fs::read_to_string(root.join(p)).ok())
+            .collect();
+        let helpers = static_lint::AssertingHelpers::build(
+            index_sources.iter().map(String::as_str),
+            &config.no_assertions.helpers,
+        );
         for rel_path in files {
             if !is_python_test_file(&rel_path) || is_excluded(&rel_path, &exclude_patterns) {
                 continue;
@@ -235,25 +262,34 @@ fn run_check(
                     Err(_) => continue,
                 }
             };
-            violations.extend(static_lint::check_file(
+            violations.extend(static_lint::check_file_with_helpers(
                 &rel_path.to_string_lossy(),
                 &source,
                 &config,
+                &helpers,
             )?);
         }
     } else {
         // An explicit path is checked regardless of pytest's test-file naming
         // convention — the caller named it, so it's in scope. That
         // convention only gates which files --staged/--all bother to parse.
+        let mut sources = Vec::new();
         for path in paths {
             if is_excluded(path, &exclude_patterns) {
                 continue;
             }
-            let source = std::fs::read_to_string(path)?;
-            violations.extend(static_lint::check_file(
+            sources.push((path, std::fs::read_to_string(path)?));
+        }
+        let helpers = static_lint::AssertingHelpers::build(
+            sources.iter().map(|(_, s)| s.as_str()),
+            &config.no_assertions.helpers,
+        );
+        for (path, source) in &sources {
+            violations.extend(static_lint::check_file_with_helpers(
                 &path.to_string_lossy(),
-                &source,
+                source,
                 &config,
+                &helpers,
             )?);
         }
     }
@@ -283,10 +319,9 @@ fn run_check(
 /// caller who has confirmed the gap is benign proceed anyway.
 fn check_context_completeness(
     found_test_count: usize,
-    junit_path: &Path,
+    summary: &dynamic::junit::JunitSummary,
     allow_incomplete: bool,
 ) -> anyhow::Result<()> {
-    let summary = dynamic::junit::load(junit_path)?;
     if found_test_count < summary.ran {
         let message = format!(
             "coverage-json has dynamic-context data for {found_test_count} test(s), but \
@@ -314,35 +349,79 @@ fn run_analyze(
     coverage_json: Option<&Path>,
     junit_xml: Option<&Path>,
     allow_incomplete_context: bool,
+    include_fixtures: bool,
+    removal_set: bool,
     kill_matrix_json: Option<&Path>,
     json: bool,
 ) -> anyhow::Result<()> {
     let mut reports = Vec::new();
 
     if let Some(cov_path) = coverage_json {
-        let loaded = dynamic::coverage::load(cov_path)?;
+        let loaded = dynamic::coverage::load(cov_path, include_fixtures)?;
+        let mut findings = redundancy::analyze(&loaded.tests);
         match junit_xml {
-            Some(junit_path) => check_context_completeness(
-                loaded.tests.len(),
-                junit_path,
-                allow_incomplete_context,
-            )?,
+            Some(junit_path) => {
+                let summary = dynamic::junit::load(junit_path)?;
+                check_context_completeness(
+                    loaded.tests_with_context,
+                    &summary,
+                    allow_incomplete_context,
+                )?;
+                let analyzed = loaded.tests.iter().map(|t| t.test_id.as_str());
+                findings.extend(
+                    dynamic::junit::tests_without_coverage(&summary, analyzed)
+                        .into_iter()
+                        .map(|test_id| redundancy::RedundancyFinding {
+                            kind: redundancy::RedundancyKind::NoCoverage,
+                            test_id,
+                            related: Vec::new(),
+                            other_matches: 0,
+                        }),
+                );
+            }
             None => eprintln!(
                 "warning: no --junit-xml given — a run with tests missing context data \
                  can't be detected. Pass --junit-xml to enable that check."
             ),
         }
+        if removal_set {
+            findings.extend(
+                redundancy::removable_set(&loaded.tests)
+                    .into_iter()
+                    .map(|test_id| redundancy::RedundancyFinding {
+                        kind: redundancy::RedundancyKind::Removable,
+                        test_id,
+                        related: Vec::new(),
+                        other_matches: 0,
+                    }),
+            );
+        }
         reports.push(AnalyzeReport {
             source: "coverage",
-            findings: redundancy::analyze(&loaded.tests),
+            findings,
+            tests_analyzed: loaded.tests.len(),
         });
     }
 
     if let Some(km_path) = kill_matrix_json {
         let loaded = dynamic::killmatrix::load(km_path)?;
+        let mut findings = redundancy::analyze(&loaded.tests);
+        if removal_set {
+            findings.extend(
+                redundancy::removable_set(&loaded.tests)
+                    .into_iter()
+                    .map(|test_id| redundancy::RedundancyFinding {
+                        kind: redundancy::RedundancyKind::Removable,
+                        test_id,
+                        related: Vec::new(),
+                        other_matches: 0,
+                    }),
+            );
+        }
         reports.push(AnalyzeReport {
             source: "mutation",
-            findings: redundancy::analyze(&loaded.tests),
+            findings,
+            tests_analyzed: loaded.tests.len(),
         });
     }
 
@@ -351,6 +430,11 @@ fn run_analyze(
     }
 
     if json {
+        for report in &reports {
+            if let Some(line) = report.flagged_summary() {
+                eprintln!("{line}");
+            }
+        }
         output::print_analyze_json(&reports)?;
     } else {
         output::print_analyze_human(&reports);
@@ -424,19 +508,19 @@ mod tests {
 
     #[test]
     fn context_shortfall_errors_by_default() {
-        let f = write_junit(TWO_PASSED_JUNIT);
-        assert!(check_context_completeness(1, f.path(), false).is_err());
+        let s = dynamic::junit::load(write_junit(TWO_PASSED_JUNIT).path()).unwrap();
+        assert!(check_context_completeness(1, &s, false).is_err());
     }
 
     #[test]
     fn context_shortfall_is_a_warning_not_an_error_when_allowed() {
-        let f = write_junit(TWO_PASSED_JUNIT);
-        assert!(check_context_completeness(1, f.path(), true).is_ok());
+        let s = dynamic::junit::load(write_junit(TWO_PASSED_JUNIT).path()).unwrap();
+        assert!(check_context_completeness(1, &s, true).is_ok());
     }
 
     #[test]
     fn no_shortfall_is_always_ok() {
-        let f = write_junit(TWO_PASSED_JUNIT);
-        assert!(check_context_completeness(2, f.path(), false).is_ok());
+        let s = dynamic::junit::load(write_junit(TWO_PASSED_JUNIT).path()).unwrap();
+        assert!(check_context_completeness(2, &s, false).is_ok());
     }
 }

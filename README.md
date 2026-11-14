@@ -44,19 +44,19 @@ friendly, same shape as [windbag](https://github.com/scale-venture-partners/wind
 
 | Rule | Severity | Flags |
 |---|---|---|
-| `NO_ASSERTIONS` | error | A test with no `assert`, no `mock.assert_*(...)`/`self.assertX(...)`/shared `_assert_helper(...)`/`pytest.fail(...)` call, no `pytest.skip(...)` call, and no `pytest.raises`/`assertRaises` context — it can't fail (or self-report as skipped) regardless of what the code does. |
+| `NO_ASSERTIONS` | error | A test with no call at all (`pass`, a docstring, `...`) and no assertion — it can never fail. A call to a function that itself asserts (found by indexing every tracked `.py` file, resolved transitively) counts as an assertion, as do `assert`, `mock.assert_*(...)`/`self.assertX(...)`, `pytest.fail(...)`, `pytest.skip(...)` and `pytest.raises`/`assertRaises`. |
+| `NO_ASSERTIONS_SMOKE` | warn | A test that makes calls but asserts nothing. It can still fail by raising, so this is a smoke test, not a stub. Disable with `[dupdup.no_assertions_smoke] enabled = false`. An existing `ignore[NO_ASSERTIONS]` comment suppresses it too. |
 | `TAUTOLOGICAL_ASSERT` | error | `assert x == x` where neither side contains a call — both sides are the same expression, so the assertion is true independent of the code under test. `assert f(x) == f(x)` is excluded: that's testing that `f` is deterministic, not a tautology. |
-| `DUPLICATE_ASSERT` | warn | Two `assert` statements that are true source-adjacent siblings (nothing else between them) with identical (whitespace-normalized) text. Not flagged if anything sits between them — re-checking an unchanged invariant after a further action is normal test structure, not duplication. |
+| `DUPLICATE_ASSERT` | warn | Two `assert` statements that are true source-adjacent siblings (nothing else between them) with identical (whitespace-normalized) text. Not flagged when the assert contains a call: repeating it re-invokes the call, which checks idempotence or caching rather than duplicating a check. Not flagged if anything sits between them — re-checking an unchanged invariant after a further action is normal test structure, not duplication. |
 
 Calibrated against a real ~130-file production Python test suite: the first
 pass (before the exemptions above existed) produced 76 findings; 61 of those
 were false positives from exactly the patterns the exemptions now cover —
 Mock/unittest/local-helper assertion calls, `f(x) == f(x)` determinism
 checks, and re-verifying an invariant after a state-changing action several
-lines later. The remaining 15 are almost all one pattern this tier doesn't
-yet resolve: a test whose only check is that a call doesn't raise (e.g.
-verifying exception-swallowing/resilience code) has no assertion of any
-kind and is indistinguishable, to a static rule, from a test that simply
+lines later. The remaining 15 were almost all tests whose only check is
+that a call doesn't raise; those are now `NO_ASSERTIONS_SMOKE` warnings
+instead of errors, since a static rule can't tell them from a test that
 forgot to assert something.
 
 ```bash
@@ -102,6 +102,21 @@ Four relations, per source:
 - `CONTRIBUTES_NOTHING_UNIQUE` — a test's coverage is fully reproduced by
   the union of every other test, even though no single other test subsumes
   it alone (the "god test" case, in reverse).
+
+Each test gets at most one finding per relation: `DUPLICATE_COVERAGE` is
+reported once per group of identical tests (from its first member, naming
+the rest), and `SUBSUMED_COVERAGE` names only the tightest superset test,
+with `(+N more)` for the others. A summary line prints how many tests were
+flagged out of how many were analyzed, and warns when that share is above
+20%: a share that large means coverage isn't telling tests apart, not that
+most of the suite is redundant.
+
+`--removal-set` also prints `REMOVABLE`: a greedy, jointly
+coverage-preserving set of tests that can all be removed together without
+shrinking any file's coverage (parametrized tests are never in it). That is
+the safe-together answer the per-test relations can't give, but it
+preserves coverage, not behaviour: two tests can cover the same lines and
+check different things.
 
 Tests that only differ by a pytest `parametrize` id (`test_foo[1]` vs.
 `test_foo[2]`) are exempted from these relations against each other —
@@ -182,6 +197,17 @@ number it found context data for in `coverage.json`, and refuse to analyze
 on a mismatch rather than silently reporting on a partial suite. Passing
 `--coverage-json` without `--junit-xml` still works, with a warning that
 this check is skipped.
+
+Only the `run` phase of each test counts as its coverage by default.
+Lines executed by fixtures (the `setup`/`teardown` phases) aren't something
+the test body exercises, and a shared fixture makes unrelated tests look
+like subsets of each other. Pass `--include-fixtures` to count them anyway.
+
+With `--junit-xml`, each test that ran but whose own body covered no line
+of the measured code is reported as `NO_COVERAGE`, identified by its junit
+`classname::name` (e.g. `tests.test_a.TestB::test_c`). That includes tests
+with no context data at all and tests whose only coverage came from
+fixtures. They are left out of the redundancy relations.
 
 A shortfall isn't always the sysmon bug, though — calibrating against a
 real suite found a context-count mismatch caused by tests that genuinely
@@ -306,11 +332,6 @@ every commit, run `analyze` in CI against a real coverage/mutation run.
   `Mock()`/`patch()` object the test itself configured — a different
   question from whether a `mock.assert_*()` call counts as an assertion at
   all, which `NO_ASSERTIONS` already handles).
-- A `NO_ASSERTIONS` exemption for a body whose only checks are that a call
-  doesn't raise — the single largest remaining false-positive class found
-  calibrating against a real suite (see above), still unresolved because a
-  safe heuristic (e.g. requiring a `side_effect=`-injecting `patch(...)` in
-  scope) hasn't been validated against enough real cases yet.
 - Per-branch dynamic-context data for the coverage source (see the known
   limitation above) — needs a real design decision about whether that means
   parsing `coverage.py`'s internal SQLite schema directly, since the public

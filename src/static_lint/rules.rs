@@ -134,41 +134,94 @@ fn collect_excluding_nested_defs<'a>(
     }
 }
 
-/// A test with no `assert`, no `mock`/unittest-style `.assert*(...)` call,
-/// and no `pytest.raises`/`assertRaises` context passes no matter what the
-/// code under test does.
+/// True if the function asserts something itself: an `assert` statement, an
+/// assertion-style call (`mock.assert_*`, `self.assertX`, `pytest.fail`), or a
+/// `pytest.raises`/`assertRaises` context. A `pytest.skip` call is not
+/// included — it is exempt from `NO_ASSERTIONS` but doesn't make a helper
+/// an asserting one.
 #[must_use]
-pub fn check_no_assertions(fn_node: Node, source: &[u8]) -> Option<Violation> {
-    if !assert_statements(fn_node).is_empty() {
-        return None;
-    }
-    if has_assertion_method_call(fn_node, source) {
-        return None;
-    }
-    if has_pytest_skip_call(fn_node, source) {
-        return None;
-    }
-    let raises = with_statements(fn_node)
+pub fn asserts_directly(fn_node: Node, source: &[u8]) -> bool {
+    !assert_statements(fn_node).is_empty()
+        || has_assertion_method_call(fn_node, source)
+        || has_raises_context(fn_node, source)
+}
+
+fn has_raises_context(fn_node: Node, source: &[u8]) -> bool {
+    with_statements(fn_node)
         .iter()
-        .any(|w| w.utf8_text(source).unwrap_or("").contains("raises"));
-    if raises {
+        .any(|w| w.utf8_text(source).unwrap_or("").contains("raises"))
+}
+
+/// The final identifier of every call in the function body, outside nested
+/// defs: `a.b.c(x)` yields `c`, `f(x)` yields `f`.
+#[must_use]
+pub fn called_names(fn_node: Node, source: &[u8]) -> Vec<String> {
+    let mut calls = Vec::new();
+    collect_excluding_nested_defs(fn_node, "call", true, &mut calls);
+    calls
+        .iter()
+        .filter_map(|call| {
+            let func = call.child_by_field_name("function")?;
+            let name_node = match func.kind() {
+                "attribute" => func.child_by_field_name("attribute")?,
+                "identifier" => func,
+                _ => return None,
+            };
+            name_node.utf8_text(source).ok().map(str::to_string)
+        })
+        .collect()
+}
+
+/// A test with no `assert`, no `mock`/unittest-style `.assert*(...)` call,
+/// no call to a helper known to assert (`helpers`), and no
+/// `pytest.raises`/`assertRaises` context passes no matter what the code
+/// under test does.
+///
+/// A body with no call at all (`pass`, a docstring, `...`) can never fail:
+/// `NO_ASSERTIONS`, an error. A body that only makes calls can still fail by
+/// raising, so it is the weaker `NO_ASSERTIONS_SMOKE`, a warning.
+#[must_use]
+pub fn check_no_assertions(
+    fn_node: Node,
+    source: &[u8],
+    helpers: &super::helpers::AssertingHelpers,
+) -> Option<Violation> {
+    if asserts_directly(fn_node, source) || has_pytest_skip_call(fn_node, source) {
         return None;
     }
-    Some(Violation {
-        file: String::new(),
-        line: fn_node.start_position().row + 1,
-        severity: Severity::Error,
-        rule: "NO_ASSERTIONS",
-        test_name: String::new(),
-        message: "no assert statement and no raises-context — this test can never fail".into(),
-    })
+    let calls = called_names(fn_node, source);
+    if calls.iter().any(|name| helpers.contains(name)) {
+        return None;
+    }
+    let line = fn_node.start_position().row + 1;
+    if calls.is_empty() {
+        Some(Violation {
+            file: String::new(),
+            line,
+            severity: Severity::Error,
+            rule: "NO_ASSERTIONS",
+            test_name: String::new(),
+            message: "no assert statement and no call — this test can never fail".into(),
+        })
+    } else {
+        Some(Violation {
+            file: String::new(),
+            line,
+            severity: Severity::Warn,
+            rule: "NO_ASSERTIONS_SMOKE",
+            test_name: String::new(),
+            message: "no assertion; this only fails if a call raises".into(),
+        })
+    }
 }
 
 /// Two back-to-back `assert` statements — direct siblings in the same
 /// block, no other statement between them — with identical (whitespace-
 /// normalized) text. The same assertion re-checked after an intervening
 /// statement is usually re-verifying an invariant held across a state
-/// change, not a copy-paste duplicate, so only true adjacency counts.
+/// change, not a copy-paste duplicate, so only true adjacency counts. An
+/// assert containing a call is skipped: repeating it re-invokes the call,
+/// which checks idempotence or caching rather than duplicating a check.
 #[must_use]
 pub fn check_duplicate_assert(fn_node: Node, source: &[u8]) -> Vec<Violation> {
     let mut out = Vec::new();
@@ -182,7 +235,7 @@ pub fn check_duplicate_assert(fn_node: Node, source: &[u8]) -> Vec<Violation> {
             }
             let prev_text = normalize(prev.utf8_text(source).unwrap_or(""));
             let cur_text = normalize(cur.utf8_text(source).unwrap_or(""));
-            if prev_text == cur_text {
+            if prev_text == cur_text && !contains_call(*cur) {
                 out.push(Violation {
                     file: String::new(),
                     line: cur.start_position().row + 1,

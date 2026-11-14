@@ -29,7 +29,13 @@ fn flags_no_assertions_duplicate_assert_and_tautological_assert() {
         .iter()
         .find(|v| v.rule == "NO_ASSERTIONS")
         .unwrap();
-    assert_eq!(no_assertions.test_name, "test_never_fails");
+    assert_eq!(no_assertions.test_name, "test_stub_never_implemented");
+
+    let smoke = violations
+        .iter()
+        .find(|v| v.rule == "NO_ASSERTIONS_SMOKE")
+        .expect("a call-only test is a smoke warning");
+    assert_eq!(smoke.test_name, "test_never_fails");
 }
 
 #[test]
