@@ -29,7 +29,9 @@ pub enum RedundancyKind {
     /// A strict subset of another single test's coverage.
     SubsumedCoverage,
     /// Every requirement this test covers is also covered by the union of
-    /// every other test — removing it would shrink nothing.
+    /// a few other tests in its file (at most [`MAX_UNION_PEERS`], named in
+    /// `related`) — removing it would shrink nothing. No single peer covers
+    /// it, or it would be `SubsumedCoverage`.
     ContributesNothingUnique,
     /// Safe to remove together with every other `Removable` test without
     /// shrinking the coverage of its file. Unlike the relations above, which
@@ -54,8 +56,7 @@ pub struct RedundancyFinding {
     /// The test the finding is about.
     pub test_id: String,
     /// The other test(s) it's redundant against, if the relation names one
-    /// (empty for `ContributesNothingUnique` and `CoversNothing`, which are
-    /// about the whole suite or nothing at all).
+    /// (empty for `CoversNothing`, which is about nothing at all).
     pub related: Vec<String>,
     /// How many further tests matched the same relation but aren't named in
     /// `related`: only the tightest superset is named for
@@ -128,6 +129,15 @@ fn comparable(a: &str, b: &str) -> bool {
 /// different universes produces meaningless results.
 #[must_use]
 pub fn analyze(tests: &[TestCoverage]) -> Vec<RedundancyFinding> {
+    analyze_with(tests, true)
+}
+
+/// [`analyze`], with the `ContributesNothingUnique` relation optional. It is
+/// the weakest of the four: each requirement can be covered by a different
+/// peer, so "every requirement is covered somewhere else" rarely means the
+/// test's scenario is covered.
+#[must_use]
+pub fn analyze_with(tests: &[TestCoverage], union_relation: bool) -> Vec<RedundancyFinding> {
     let n = tests.len();
     let mut findings = Vec::new();
     let mut explained: HashSet<usize> = HashSet::new();
@@ -193,27 +203,55 @@ pub fn analyze(tests: &[TestCoverage]) -> Vec<RedundancyFinding> {
     }
 
     for (i, test) in tests.iter().enumerate() {
-        if explained.contains(&i) || test.bits.count_ones(..) == 0 {
+        if !union_relation || explained.contains(&i) || test.bits.count_ones(..) == 0 {
             continue;
         }
-        let mut union = test.bits.clone();
-        union.clear();
-        for (j, other) in tests.iter().enumerate() {
-            if j != i && comparable(&other.test_id, &test.test_id) {
-                union.union_with(&other.bits);
-            }
-        }
-        if is_subset(&test.bits, &union) {
+        let peers: Vec<usize> = (0..n)
+            .filter(|&j| j != i && comparable(&tests[j].test_id, &test.test_id))
+            .collect();
+        if let Some(cover) = small_cover(tests, i, &peers) {
             findings.push(RedundancyFinding {
                 kind: RedundancyKind::ContributesNothingUnique,
                 test_id: test.test_id.clone(),
-                related: Vec::new(),
+                related: cover.iter().map(|&j| tests[j].test_id.clone()).collect(),
                 other_matches: 0,
             });
         }
     }
 
     findings
+}
+
+/// The most peers a `ContributesNothingUnique` finding may name. A larger
+/// cover is true of nearly any test in a big file, since each requirement
+/// can be covered by a different peer, and isn't a claim a reader can check.
+const MAX_UNION_PEERS: usize = 3;
+
+/// A set of at most [`MAX_UNION_PEERS`] of `peers` whose union covers every
+/// requirement of `tests[target]`, chosen greedily (most uncovered
+/// requirements first). `None` if no such set is found.
+fn small_cover(tests: &[TestCoverage], target: usize, peers: &[usize]) -> Option<Vec<usize>> {
+    let mut remaining = tests[target].bits.clone();
+    let mut chosen = Vec::new();
+    while remaining.count_ones(..) > 0 {
+        if chosen.len() == MAX_UNION_PEERS {
+            return None;
+        }
+        let best = peers
+            .iter()
+            .copied()
+            .filter(|j| !chosen.contains(j))
+            .map(|j| {
+                let mut gain = remaining.clone();
+                gain.intersect_with(&tests[j].bits);
+                (gain.count_ones(..), j)
+            })
+            .filter(|(gain, _)| *gain > 0)
+            .max_by_key(|(gain, j)| (*gain, std::cmp::Reverse(*j)))?;
+        remaining.difference_with(&tests[best.1].bits);
+        chosen.push(best.1);
+    }
+    Some(chosen)
 }
 
 /// A jointly coverage-preserving set of tests that can all be removed at once:
@@ -596,5 +634,48 @@ mod tests {
     fn removable_set_scopes_coverage_to_the_file() {
         let tests = vec![tc("a.py::test_x", &[1]), tc("b.py::test_y", &[1])];
         assert!(removable_set(&tests).is_empty());
+    }
+
+    #[test]
+    fn a_union_finding_names_the_peers_that_cover_the_test() {
+        let tests = vec![
+            tc("f.py::test_wide", &[1, 2]),
+            tc("f.py::test_a", &[1, 3, 6]),
+            tc("f.py::test_b", &[2, 4, 7]),
+        ];
+        let findings = analyze(&tests);
+        let f = findings
+            .iter()
+            .find(|f| f.kind == RedundancyKind::ContributesNothingUnique)
+            .unwrap();
+        assert_eq!(f.test_id, "f.py::test_wide");
+        assert_eq!(f.related, vec!["f.py::test_a", "f.py::test_b"]);
+    }
+
+    #[test]
+    fn a_cover_needing_more_than_three_peers_is_not_reported() {
+        let tests = vec![
+            tc("f.py::test_wide", &[0, 1, 2, 3]),
+            tc("f.py::test_a", &[0, 4]),
+            tc("f.py::test_b", &[1, 5]),
+            tc("f.py::test_c", &[2, 6]),
+            tc("f.py::test_d", &[3, 7]),
+        ];
+        assert!(analyze(&tests)
+            .iter()
+            .all(|f| f.kind != RedundancyKind::ContributesNothingUnique));
+    }
+
+    #[test]
+    fn the_union_relation_can_be_turned_off() {
+        let tests = vec![
+            tc("f.py::test_wide", &[1, 2]),
+            tc("f.py::test_a", &[1, 3, 6]),
+            tc("f.py::test_b", &[2, 4, 7]),
+        ];
+        assert!(analyze_with(&tests, true)
+            .iter()
+            .any(|f| f.kind == RedundancyKind::ContributesNothingUnique));
+        assert!(analyze_with(&tests, false).is_empty());
     }
 }

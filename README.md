@@ -99,9 +99,13 @@ Four relations, per source:
 - `DUPLICATE_COVERAGE` — two tests cover exactly the same requirements.
 - `SUBSUMED_COVERAGE` — a test's coverage is a strict subset of another
   single test's.
-- `CONTRIBUTES_NOTHING_UNIQUE` — a test's coverage is fully reproduced by
-  the union of every other test, even though no single other test subsumes
-  it alone (the "god test" case, in reverse).
+- `CONTRIBUTES_NOTHING_UNIQUE` — a test's requirements are fully reproduced
+  by the union of at most three other tests in its file (named in the
+  finding), even though no single other test subsumes it. Coverage source:
+  off by default, enable with `--union-relation`, because each requirement
+  can be covered by a different peer, so it rarely means the test's scenario
+  is covered. On by default for the mutation source, where it means no
+  mutant is killed by this test alone.
 
 By default each test's assertions count as requirements too: its `assert`
 statements, assertion-style calls (`mock.assert_*`, `self.assertX`,

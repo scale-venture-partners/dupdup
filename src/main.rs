@@ -76,6 +76,13 @@ enum Commands {
         /// can cover the same lines and check different things.
         #[arg(long)]
         removal_set: bool,
+        /// Also report CONTRIBUTES_NOTHING_UNIQUE: a test whose every
+        /// requirement is covered by a few other tests combined (named in
+        /// the finding). Off by default: each requirement can be covered by
+        /// a different peer, so this rarely means the test's scenario is
+        /// covered.
+        #[arg(long)]
+        union_relation: bool,
         /// Directory the coverage run's test paths are relative to (the
         /// pytest rootdir), inside a git repo. Default: the current directory.
         #[arg(long, default_value = ".")]
@@ -139,6 +146,7 @@ fn main() -> anyhow::Result<()> {
             allow_incomplete_context,
             include_fixtures,
             removal_set,
+            union_relation,
             test_root,
             no_assertion_check,
             kill_matrix_json,
@@ -150,6 +158,7 @@ fn main() -> anyhow::Result<()> {
             allow_incomplete_context,
             include_fixtures,
             removal_set,
+            union_relation,
             test_root: &test_root,
             no_assertion_check,
             kill_matrix_json: kill_matrix_json.as_deref(),
@@ -401,6 +410,7 @@ struct AnalyzeOptions<'a> {
     allow_incomplete_context: bool,
     include_fixtures: bool,
     removal_set: bool,
+    union_relation: bool,
     test_root: &'a Path,
     no_assertion_check: bool,
     kill_matrix_json: Option<&'a Path>,
@@ -415,6 +425,7 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
         allow_incomplete_context,
         include_fixtures,
         removal_set,
+        union_relation,
         test_root,
         no_assertion_check,
         kill_matrix_json,
@@ -431,7 +442,7 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
         if !no_assertion_check {
             add_assertions(&mut loaded.tests, test_root)?;
         }
-        let mut findings = redundancy::analyze(&loaded.tests);
+        let mut findings = redundancy::analyze_with(&loaded.tests, union_relation);
         match junit_xml {
             Some(junit_path) => {
                 let summary = dynamic::junit::load(junit_path)?;

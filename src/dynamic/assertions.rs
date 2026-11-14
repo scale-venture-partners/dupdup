@@ -2,6 +2,7 @@
 //! count as redundant if they cover the same code *and* check the same things.
 
 use crate::redundancy::TestCoverage;
+use crate::static_lint::rules::Fingerprint;
 use crate::static_lint::{assertion_fingerprints, AssertingHelpers};
 use std::collections::HashMap;
 use std::path::Path;
@@ -10,9 +11,9 @@ use std::path::Path;
 /// resolved to source.
 #[derive(Debug, Default)]
 pub struct Fingerprints {
-    /// Fingerprint per test id; a resolved test with no assertion maps to an
-    /// empty list.
-    pub by_test: HashMap<String, Vec<String>>,
+    /// Fingerprint per test id; a resolved test with no assertion has an
+    /// empty `assertions` list.
+    pub by_test: HashMap<String, Fingerprint>,
     /// Tests whose source file or function wasn't found under the root.
     pub unresolved: usize,
 }
@@ -36,7 +37,7 @@ pub fn load<'a>(
     root: &Path,
     helpers: &AssertingHelpers,
 ) -> Fingerprints {
-    let mut per_file: HashMap<String, Option<HashMap<String, Vec<String>>>> = HashMap::new();
+    let mut per_file: HashMap<String, Option<HashMap<String, Fingerprint>>> = HashMap::new();
     let mut out = Fingerprints::default();
     for id in test_ids {
         let found = split_node_id(id).and_then(|(file, key)| {
@@ -56,28 +57,35 @@ pub fn load<'a>(
     out
 }
 
-/// Appends one requirement per distinct (file, assertion) to each test's
-/// bitset: a test gets the bits of the assertions it makes. A test that
-/// asserts nothing gets a requirement of its own: "does not raise" is its
-/// whole check, so no other test can stand in for it. A test that couldn't
-/// be resolved gains no bits.
+/// Appends requirements to each test's bitset: one per distinct
+/// (file, assertion), and one per distinct (file, called function name). The
+/// calls bind an assertion to what it is asserted about, so `result is None`
+/// after `verify(...)` is not covered by `result is None` after `load(...)`.
+/// A test that asserts nothing gets a requirement of its own: "does not
+/// raise" is its whole check, so no other test can stand in for it. A test
+/// that couldn't be resolved gains no bits.
 pub fn augment(tests: &mut [TestCoverage], fingerprints: &Fingerprints) {
-    let mut index: HashMap<(String, &str), usize> = HashMap::new();
+    let mut index: HashMap<(String, String), usize> = HashMap::new();
     let base = tests.first().map_or(0, |t| t.bits.len());
     let mut per_test: Vec<Vec<usize>> = Vec::with_capacity(tests.len());
     for t in tests.iter() {
         let file = t.test_id.split("::").next().unwrap_or("").to_string();
         let mut bits: Vec<usize> = Vec::new();
         if let Some(fp) = fingerprints.by_test.get(&t.test_id) {
-            if fp.is_empty() {
-                // A key no real fingerprint can equal: it never contains a
-                // test id's own text for an assertion.
-                let next = base + index.len();
-                bits.push(*index.entry((t.test_id.clone(), "")).or_insert(next));
+            let mut keys: Vec<(String, String)> = Vec::new();
+            if fp.assertions.is_empty() {
+                // Keyed by the test's own id, so no other test shares it.
+                keys.push((t.test_id.clone(), String::new()));
             }
-            for text in fp {
+            for text in &fp.assertions {
+                keys.push((file.clone(), format!("a:{text}")));
+            }
+            for name in &fp.calls {
+                keys.push((file.clone(), format!("c:{name}")));
+            }
+            for key in keys {
                 let next = base + index.len();
-                bits.push(*index.entry((file.clone(), text.as_str())).or_insert(next));
+                bits.push(*index.entry(key).or_insert(next));
             }
         }
         per_test.push(bits);
@@ -112,10 +120,11 @@ mod tests {
             by_test: pairs
                 .iter()
                 .map(|(id, a)| {
-                    (
-                        (*id).to_string(),
-                        a.iter().map(|s| (*s).to_string()).collect(),
-                    )
+                    let fp = Fingerprint {
+                        assertions: a.iter().map(|s| (*s).to_string()).collect(),
+                        calls: Vec::new(),
+                    };
+                    ((*id).to_string(), fp)
                 })
                 .collect(),
             unresolved: 0,
@@ -186,6 +195,26 @@ mod tests {
     }
 
     #[test]
+    fn the_same_assertion_about_different_calls_is_not_redundant() {
+        let fp = |calls: &[&str]| Fingerprint {
+            assertions: vec!["assert result is None".into()],
+            calls: calls.iter().map(|s| (*s).to_string()).collect(),
+        };
+        let mut tests = vec![tc("f.py::test_a", &[1]), tc("f.py::test_b", &[1])];
+        let fingerprints = Fingerprints {
+            by_test: [
+                ("f.py::test_a".to_string(), fp(&["load"])),
+                ("f.py::test_b".to_string(), fp(&["verify"])),
+            ]
+            .into_iter()
+            .collect(),
+            unresolved: 0,
+        };
+        augment(&mut tests, &fingerprints);
+        assert!(crate::redundancy::analyze(&tests).is_empty());
+    }
+
+    #[test]
     fn load_resolves_class_methods_and_counts_the_unresolved() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -202,7 +231,10 @@ mod tests {
             dir.path(),
             &AssertingHelpers::default(),
         );
-        assert_eq!(loaded.by_test["t.py::TestC::test_m[a]"], vec!["assert 1"]);
+        assert_eq!(
+            loaded.by_test["t.py::TestC::test_m[a]"].assertions,
+            vec!["assert 1"]
+        );
         assert_eq!(loaded.unresolved, 2);
     }
 }

@@ -196,6 +196,17 @@ fn token_text(node: Node, source: &[u8]) -> String {
     tokens.join(" ")
 }
 
+/// What a test checks and what it calls.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Fingerprint {
+    /// What the test checks; see [`assertion_fingerprint`].
+    pub assertions: Vec<String>,
+    /// The name of every function or method the test calls directly, sorted
+    /// and deduplicated. It binds a generic assertion (`result is None`) to
+    /// the thing it is asserted about.
+    pub calls: Vec<String>,
+}
+
 /// What the test checks, as comparable strings: each `assert` statement, each
 /// assertion-style call (`mock.assert_*(...)`, `self.assertX(...)`,
 /// `pytest.fail(...)`), each call to an asserting helper, and each
@@ -207,7 +218,7 @@ pub fn assertion_fingerprint(
     fn_node: Node,
     source: &[u8],
     helpers: &super::helpers::AssertingHelpers,
-) -> Vec<String> {
+) -> Fingerprint {
     let mut out: Vec<String> = assert_statements(fn_node)
         .iter()
         .map(|n| token_text(*n, source))
@@ -251,7 +262,13 @@ pub fn assertion_fingerprint(
 
     out.sort();
     out.dedup();
-    out
+    let mut calls = called_names(fn_node, source);
+    calls.sort();
+    calls.dedup();
+    Fingerprint {
+        assertions: out,
+        calls,
+    }
 }
 
 /// A test with no `assert`, no `mock`/unittest-style `.assert*(...)` call,

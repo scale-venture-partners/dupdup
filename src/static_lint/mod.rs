@@ -67,7 +67,7 @@ fn collect_test_functions<'a>(node: Node<'a>, source: &'a [u8], out: &mut Vec<No
 pub fn assertion_fingerprints(
     source: &str,
     helpers: &AssertingHelpers,
-) -> anyhow::Result<std::collections::HashMap<String, Vec<String>>> {
+) -> anyhow::Result<std::collections::HashMap<String, rules::Fingerprint>> {
     let tree = parse(source)?;
     let mut out = std::collections::HashMap::new();
     collect_fingerprints(tree.root_node(), source.as_bytes(), "", helpers, &mut out);
@@ -79,7 +79,7 @@ fn collect_fingerprints(
     source: &[u8],
     prefix: &str,
     helpers: &AssertingHelpers,
-    out: &mut std::collections::HashMap<String, Vec<String>>,
+    out: &mut std::collections::HashMap<String, rules::Fingerprint>,
 ) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -310,9 +310,9 @@ mod tests {
     fn fingerprints_are_keyed_by_class_qualified_name() {
         let source = "def test_a():\n    assert x == 1\n\nclass TestC:\n    @pytest.mark.slow\n    def test_b(self):\n        assert y\n        mock.assert_called_once_with(1)\n";
         let fps = assertion_fingerprints(source, &AssertingHelpers::default()).unwrap();
-        assert_eq!(fps["test_a"], vec!["assert x == 1"]);
+        assert_eq!(fps["test_a"].assertions, vec!["assert x == 1"]);
         assert_eq!(
-            fps["TestC::test_b"],
+            fps["TestC::test_b"].assertions,
             vec!["assert y", "mock . assert_called_once_with ( 1 )"]
         );
     }
@@ -329,7 +329,7 @@ mod tests {
             &AssertingHelpers::default(),
         )
         .unwrap();
-        assert_ne!(a["test_a"], b["test_a"]);
+        assert_ne!(a["test_a"].assertions, b["test_a"].assertions);
     }
 
     #[test]
@@ -337,10 +337,12 @@ mod tests {
         let source = "def check(x):\n    assert x\n\ndef test_a():\n    with pytest.raises(ValueError):\n        f()\n    check(1)\n";
         let helpers = AssertingHelpers::build([source], &[]);
         let fps = assertion_fingerprints(source, &helpers).unwrap();
-        assert_eq!(fps["test_a"].len(), 2);
-        assert!(fps["test_a"]
+        let a = &fps["test_a"].assertions;
+        assert_eq!(a.len(), 2);
+        assert!(a
             .iter()
             .any(|s| s.contains("raises") && s.contains("f ( )")));
-        assert!(fps["test_a"].iter().any(|s| s == "check ( 1 )"));
+        assert!(a.iter().any(|s| s == "check ( 1 )"));
+        assert_eq!(fps["test_a"].calls, vec!["check", "f", "raises"]);
     }
 }
