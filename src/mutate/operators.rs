@@ -162,9 +162,241 @@ pub fn find_mutants(file: &str, source: &str) -> anyhow::Result<Vec<Mutant>> {
     Ok(out)
 }
 
+/// The replacement body for a function under extreme mutation, chosen from
+/// its return annotation: `pass` for a function that returns nothing, a
+/// neutral value of the annotated type otherwise, and `return None` when the
+/// type is unknown but the function does return something.
+fn extreme_body(annotation: Option<&str>, returns_value: bool) -> &'static str {
+    let Some(ann) = annotation.map(str::trim) else {
+        return if returns_value { "return None" } else { "pass" };
+    };
+    let lower = ann.to_lowercase();
+    if ann == "None" {
+        "pass"
+    } else if lower.contains("none") || lower.starts_with("optional") {
+        "return None"
+    } else if ann == "bool" {
+        "return False"
+    } else if ann == "int" {
+        "return 0"
+    } else if ann == "float" {
+        "return 0.0"
+    } else if ann == "str" {
+        "return \"\""
+    } else if ["list", "sequence", "iterable"]
+        .iter()
+        .any(|p| lower.starts_with(p))
+    {
+        "return []"
+    } else if ["dict", "mapping"].iter().any(|p| lower.starts_with(p)) {
+        "return {}"
+    } else if lower.starts_with("set") {
+        "return set()"
+    } else if lower.starts_with("tuple") {
+        "return ()"
+    } else {
+        "return None"
+    }
+}
+
+/// Whether `node`'s subtree (not descending into nested functions or
+/// classes) contains a node of one of `kinds`.
+fn contains_kind(node: Node, kinds: &[&str]) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if kinds.contains(&child.kind()) {
+            return true;
+        }
+        if !matches!(child.kind(), "function_definition" | "class_definition")
+            && contains_kind(child, kinds)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// A function body that is only a docstring, `pass`, `...` or
+/// `raise NotImplementedError`: replacing it changes nothing a test could see.
+fn is_stub(body: Node, source: &[u8]) -> bool {
+    let mut cursor = body.walk();
+    let stmts: Vec<Node> = body.children(&mut cursor).collect();
+    stmts.iter().all(|s| {
+        let text = s.utf8_text(source).unwrap_or("").trim();
+        s.kind() == "pass_statement"
+            || text == "..."
+            || text.starts_with("raise NotImplementedError")
+            || (s.kind() == "expression_statement"
+                && s.child(0).is_some_and(|c| c.kind() == "string"))
+    })
+}
+
+fn walk_extreme(
+    node: Node<'_>,
+    source: &[u8],
+    file: &str,
+    in_function: bool,
+    out: &mut Vec<Mutant>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_definition" => {
+                if !in_function {
+                    extreme_mutant(child, source, file, out);
+                }
+                walk_extreme(child, source, file, true, out);
+            }
+            _ => walk_extreme(child, source, file, in_function, out),
+        }
+    }
+}
+
+fn extreme_mutant(func: Node<'_>, source: &[u8], file: &str, out: &mut Vec<Mutant>) {
+    let Some(body) = func.child_by_field_name("body") else {
+        return;
+    };
+    let name = func
+        .child_by_field_name("name")
+        .and_then(|n| n.utf8_text(source).ok())
+        .unwrap_or("");
+    let decorators = func
+        .parent()
+        .filter(|p| p.kind() == "decorated_definition")
+        .and_then(|p| p.utf8_text(source).ok())
+        .map(|t| t.split("def ").next().unwrap_or("").to_string())
+        .unwrap_or_default();
+    let skipped_decorator = ["abstractmethod", "overload", ".setter", ".deleter"]
+        .iter()
+        .any(|d| decorators.contains(d));
+    if skipped_decorator
+        || (name.starts_with("__") && name.ends_with("__"))
+        || is_stub(body, source)
+        || contains_kind(body, &["yield", "yield_statement"])
+    {
+        return;
+    }
+    let annotation = func
+        .child_by_field_name("return_type")
+        .and_then(|r| r.utf8_text(source).ok());
+    let returns_value = {
+        let mut found = false;
+        let mut stack = vec![body];
+        while let Some(n) = stack.pop() {
+            let mut c = n.walk();
+            for ch in n.children(&mut c) {
+                if matches!(ch.kind(), "function_definition" | "class_definition") {
+                    continue;
+                }
+                if ch.kind() == "return_statement"
+                    && ch
+                        .child(1)
+                        .is_some_and(|v| v.utf8_text(source).unwrap_or("") != "None")
+                {
+                    found = true;
+                }
+                stack.push(ch);
+            }
+        }
+        found
+    };
+    let replacement = extreme_body(annotation, returns_value).to_string();
+    let line = func.start_position().row + 1;
+    let id = format!("{file}:{line}:EXTREME:{}", out.len());
+    out.push(Mutant {
+        id,
+        candidate_lines: (body.start_position().row + 1)..=(body.end_position().row + 1),
+        byte_start: body.start_byte(),
+        byte_end: body.end_byte(),
+        replacement,
+    });
+}
+
+/// One mutant per function (extreme mutation): the whole body is replaced by
+/// a trivial value. A method or function is skipped when it is a stub, a
+/// generator, a dunder, an abstract or overloaded or property-setter
+/// definition, or nested inside another function. A mutant that survives
+/// means no covering test notices the function's behaviour is gone.
+///
+/// # Errors
+/// Returns an error if `source` can't be parsed as Python.
+pub fn find_extreme_mutants(file: &str, source: &str) -> anyhow::Result<Vec<Mutant>> {
+    let tree = crate::static_lint::parse(source)?;
+    let mut out = Vec::new();
+    walk_extreme(tree.root_node(), source.as_bytes(), file, false, &mut out);
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn extreme(source: &str) -> Vec<String> {
+        find_extreme_mutants("f.py", source)
+            .unwrap()
+            .iter()
+            .map(|m| m.apply(source))
+            .collect()
+    }
+
+    fn parses(source: &str) -> bool {
+        !crate::static_lint::parse(source)
+            .unwrap()
+            .root_node()
+            .has_error()
+    }
+
+    #[test]
+    fn extreme_replaces_a_body_by_the_annotated_type() {
+        let cases = [
+            ("def f(a) -> int:\n    return a + 1\n", "return 0"),
+            ("def f(a) -> str:\n    return a\n", "return \"\""),
+            ("def f(a) -> bool:\n    return a\n", "return False"),
+            ("def f(a) -> list[int]:\n    return [a]\n", "return []"),
+            ("def f(a) -> dict[str, int]:\n    return {}\n", "return {}"),
+            ("def f(a) -> int | None:\n    return a\n", "return None"),
+            ("def f(a) -> None:\n    print(a)\n", "pass"),
+        ];
+        for (source, body) in cases {
+            let out = extreme(source);
+            assert_eq!(out.len(), 1, "{source}");
+            assert!(out[0].contains(body), "{source} -> {}", out[0]);
+            assert!(parses(&out[0]), "{}", out[0]);
+        }
+    }
+
+    #[test]
+    fn extreme_without_annotation_uses_none_or_pass() {
+        assert!(extreme("def f(a):\n    return a\n")[0].contains("return None"));
+        assert!(extreme("def f(a):\n    print(a)\n")[0].contains("pass"));
+    }
+
+    #[test]
+    fn extreme_handles_methods_and_one_line_bodies() {
+        let source = "class C:\n    def m(self, a) -> int:\n        x = a\n        return x\n\n    def n(self): return 1\n";
+        let out = extreme(source);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|s| parses(s)));
+    }
+
+    #[test]
+    fn extreme_skips_stubs_generators_dunders_and_nested_functions() {
+        assert!(extreme("def f():\n    pass\n").is_empty());
+        assert!(extreme("def f():\n    \"doc\"\n    ...\n").is_empty());
+        assert!(extreme("def f():\n    raise NotImplementedError\n").is_empty());
+        assert!(extreme("def f():\n    yield 1\n").is_empty());
+        assert!(extreme("class C:\n    def __init__(self):\n        self.x = 1\n").is_empty());
+        assert!(extreme("@abstractmethod\ndef f(self):\n    return 1\n").is_empty());
+        let nested = extreme("def f():\n    def g():\n        return 1\n    return g()\n");
+        assert_eq!(nested.len(), 1, "only the outer function is mutated");
+    }
+
+    #[test]
+    fn extreme_candidate_lines_are_the_body() {
+        let source = "def f(a):\n    x = a\n    return x\n";
+        let m = &find_extreme_mutants("f.py", source).unwrap()[0];
+        assert_eq!(m.candidate_lines, 2..=3);
+    }
 
     fn find(source: &str) -> Vec<Mutant> {
         find_mutants("f.py", source).unwrap()

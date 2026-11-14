@@ -297,6 +297,16 @@ dupdup mutate mypkg/checkout.py mypkg/pricing.py --coverage-json coverage.json >
 dupdup analyze --kill-matrix-json kills.json
 ```
 
+`--extreme` switches to extreme mutation ([Descartes](https://arxiv.org/html/1811.03045v1)-style):
+one mutant per function or method, its whole body replaced by a neutral value
+chosen from the return annotation (`pass` for no return, `0`, `0.0`, `""`,
+`False`, `[]`, `{}`, `set()`, `()`, otherwise `None`). Stubs, generators,
+dunders, abstract/overloaded/setter definitions and functions nested in
+another function are skipped. A function whose mutant survives is
+pseudo-tested: covered, but no covering test notices its behaviour is gone.
+It produces the same `kills.json`, with a universe of one mutant per function
+instead of hundreds of point mutants per module.
+
 Mutants come from walking the same tree-sitter AST `static_lint` uses over
 each `--source` file (application code, not test files — spelled exactly
 as it appears as a key in `coverage.json`'s own `files` map), applying a
