@@ -14,6 +14,53 @@ pub struct JunitSummary {
     /// Test cases marked `<error>` (failed before the body ran, e.g. a
     /// fixture error).
     pub errored: usize,
+    /// The `classname::name` of each test counted in `ran`, the form
+    /// [`junit_key`] produces from a pytest node id.
+    pub ran_tests: Vec<String>,
+}
+
+/// The junit `classname::name` of a pytest node id:
+/// `tests/test_a.py::TestB::test_c[p]` becomes `tests.test_a.TestB::test_c[p]`.
+/// The parametrize suffix is split off before the `::` split because a
+/// parametrize id can itself contain `::` or `/`.
+#[must_use]
+pub fn junit_key(node_id: &str) -> String {
+    let (head, params) = match node_id.find('[') {
+        Some(i) => node_id.split_at(i),
+        None => (node_id, ""),
+    };
+    let mut parts: Vec<&str> = head.split("::").collect();
+    let name = parts.pop().unwrap_or("");
+    let module = parts.first().copied().unwrap_or("");
+    let module = module
+        .strip_suffix(".py")
+        .unwrap_or(module)
+        .replace('/', ".");
+    let classes = &parts[parts.len().min(1)..];
+    let classname = std::iter::once(module.as_str())
+        .chain(classes.iter().copied())
+        .collect::<Vec<_>>()
+        .join(".");
+    format!("{classname}::{name}{params}")
+}
+
+/// Tests that ran but whose own body covered nothing in the measured code:
+/// the junit tests in `summary` whose key is not in `analyzed_ids`.
+#[must_use]
+pub fn tests_without_coverage<'a>(
+    summary: &JunitSummary,
+    analyzed_ids: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    let covered: std::collections::HashSet<String> =
+        analyzed_ids.into_iter().map(junit_key).collect();
+    let mut missing: Vec<String> = summary
+        .ran_tests
+        .iter()
+        .filter(|k| !covered.contains(*k))
+        .cloned()
+        .collect();
+    missing.sort();
+    missing
 }
 
 /// Loads and summarizes a pytest `--junitxml` report at `path`.
@@ -25,6 +72,17 @@ pub fn load(path: &Path) -> anyhow::Result<JunitSummary> {
     parse(&text)
 }
 
+fn case_key(e: &quick_xml::events::BytesStart) -> String {
+    let attr = |name: &[u8]| {
+        e.attributes()
+            .flatten()
+            .find(|a| a.key.as_ref() == name)
+            .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
+            .unwrap_or_default()
+    };
+    format!("{}::{}", attr(b"classname"), attr(b"name"))
+}
+
 fn parse(xml: &str) -> anyhow::Result<JunitSummary> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -32,6 +90,7 @@ fn parse(xml: &str) -> anyhow::Result<JunitSummary> {
     let mut summary = JunitSummary::default();
     let mut in_testcase = false;
     let mut testcase_excluded = false;
+    let mut current_key = String::new();
 
     loop {
         match reader.read_event()? {
@@ -40,6 +99,7 @@ fn parse(xml: &str) -> anyhow::Result<JunitSummary> {
                 b"testcase" => {
                     in_testcase = true;
                     testcase_excluded = false;
+                    current_key = case_key(&e);
                 }
                 b"skipped" if in_testcase => {
                     testcase_excluded = true;
@@ -52,7 +112,10 @@ fn parse(xml: &str) -> anyhow::Result<JunitSummary> {
                 _ => {}
             },
             Event::Empty(e) => match e.local_name().as_ref() {
-                b"testcase" => summary.ran += 1,
+                b"testcase" => {
+                    summary.ran += 1;
+                    summary.ran_tests.push(case_key(&e));
+                }
                 b"skipped" if in_testcase => {
                     testcase_excluded = true;
                     summary.skipped += 1;
@@ -67,6 +130,7 @@ fn parse(xml: &str) -> anyhow::Result<JunitSummary> {
                 if e.local_name().as_ref() == b"testcase" {
                     if !testcase_excluded {
                         summary.ran += 1;
+                        summary.ran_tests.push(std::mem::take(&mut current_key));
                     }
                     in_testcase = false;
                 }
@@ -105,8 +169,28 @@ mod tests {
             JunitSummary {
                 ran: 2,
                 skipped: 1,
-                errored: 1
+                errored: 1,
+                ran_tests: vec!["t::passed".into(), "t::failed".into()],
             }
         );
+    }
+
+    #[test]
+    fn junit_key_maps_a_node_id_to_classname_and_name() {
+        assert_eq!(junit_key("tests/test_a.py::test_b"), "tests.test_a::test_b");
+        assert_eq!(
+            junit_key("tests/test_a.py::TestC::test_d[x/y::z]"),
+            "tests.test_a.TestC::test_d[x/y::z]"
+        );
+    }
+
+    #[test]
+    fn tests_without_coverage_is_the_ran_tests_missing_from_the_analysis() {
+        let summary = JunitSummary {
+            ran_tests: vec!["tests.test_a::test_x".into(), "tests.test_a::test_y".into()],
+            ..JunitSummary::default()
+        };
+        let missing = tests_without_coverage(&summary, ["tests/test_a.py::test_x"]);
+        assert_eq!(missing, vec!["tests.test_a::test_y"]);
     }
 }

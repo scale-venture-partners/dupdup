@@ -311,10 +311,9 @@ fn run_check(
 /// caller who has confirmed the gap is benign proceed anyway.
 fn check_context_completeness(
     found_test_count: usize,
-    junit_path: &Path,
+    summary: &dynamic::junit::JunitSummary,
     allow_incomplete: bool,
 ) -> anyhow::Result<()> {
-    let summary = dynamic::junit::load(junit_path)?;
     if found_test_count < summary.ran {
         let message = format!(
             "coverage-json has dynamic-context data for {found_test_count} test(s), but \
@@ -350,12 +349,26 @@ fn run_analyze(
 
     if let Some(cov_path) = coverage_json {
         let loaded = dynamic::coverage::load(cov_path, include_fixtures)?;
+        let mut findings = redundancy::analyze(&loaded.tests);
         match junit_xml {
-            Some(junit_path) => check_context_completeness(
-                loaded.tests_with_context,
-                junit_path,
-                allow_incomplete_context,
-            )?,
+            Some(junit_path) => {
+                let summary = dynamic::junit::load(junit_path)?;
+                check_context_completeness(
+                    loaded.tests_with_context,
+                    &summary,
+                    allow_incomplete_context,
+                )?;
+                let analyzed = loaded.tests.iter().map(|t| t.test_id.as_str());
+                findings.extend(
+                    dynamic::junit::tests_without_coverage(&summary, analyzed)
+                        .into_iter()
+                        .map(|test_id| redundancy::RedundancyFinding {
+                            kind: redundancy::RedundancyKind::NoCoverage,
+                            test_id,
+                            related: Vec::new(),
+                        }),
+                );
+            }
             None => eprintln!(
                 "warning: no --junit-xml given — a run with tests missing context data \
                  can't be detected. Pass --junit-xml to enable that check."
@@ -363,7 +376,7 @@ fn run_analyze(
         }
         reports.push(AnalyzeReport {
             source: "coverage",
-            findings: redundancy::analyze(&loaded.tests),
+            findings,
         });
     }
 
@@ -453,19 +466,19 @@ mod tests {
 
     #[test]
     fn context_shortfall_errors_by_default() {
-        let f = write_junit(TWO_PASSED_JUNIT);
-        assert!(check_context_completeness(1, f.path(), false).is_err());
+        let s = dynamic::junit::load(write_junit(TWO_PASSED_JUNIT).path()).unwrap();
+        assert!(check_context_completeness(1, &s, false).is_err());
     }
 
     #[test]
     fn context_shortfall_is_a_warning_not_an_error_when_allowed() {
-        let f = write_junit(TWO_PASSED_JUNIT);
-        assert!(check_context_completeness(1, f.path(), true).is_ok());
+        let s = dynamic::junit::load(write_junit(TWO_PASSED_JUNIT).path()).unwrap();
+        assert!(check_context_completeness(1, &s, true).is_ok());
     }
 
     #[test]
     fn no_shortfall_is_always_ok() {
-        let f = write_junit(TWO_PASSED_JUNIT);
-        assert!(check_context_completeness(2, f.path(), false).is_ok());
+        let s = dynamic::junit::load(write_junit(TWO_PASSED_JUNIT).path()).unwrap();
+        assert!(check_context_completeness(2, &s, false).is_ok());
     }
 }

@@ -35,6 +35,10 @@ pub enum RedundancyKind {
     /// killed mutants for the mutation source) — vacuously a subset of
     /// every other test, so reported once instead of once per peer.
     CoversNothing,
+    /// The test ran, but its own body executed no line of the measured
+    /// code. Set by `analyze --junit-xml`, not by [`analyze`]; its id is the
+    /// junit `classname::name`.
+    NoCoverage,
 }
 
 /// One test flagged by `analyze`, and why.

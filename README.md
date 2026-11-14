@@ -188,6 +188,12 @@ Lines executed by fixtures (the `setup`/`teardown` phases) aren't something
 the test body exercises, and a shared fixture makes unrelated tests look
 like subsets of each other. Pass `--include-fixtures` to count them anyway.
 
+With `--junit-xml`, each test that ran but whose own body covered no line
+of the measured code is reported as `NO_COVERAGE`, identified by its junit
+`classname::name` (e.g. `tests.test_a.TestB::test_c`). That includes tests
+with no context data at all and tests whose only coverage came from
+fixtures. They are left out of the redundancy relations.
+
 A shortfall isn't always the sysmon bug, though — calibrating against a
 real suite found a context-count mismatch caused by tests that genuinely
 execute no traceable line in the covered package (a pure static-analysis
