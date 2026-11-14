@@ -196,6 +196,55 @@ fn token_text(node: Node, source: &[u8]) -> String {
     tokens.join(" ")
 }
 
+/// The body of a test with every string and number replaced by one
+/// placeholder, as a token string: two tests with equal shapes run the same
+/// code and differ only in literal values. `None` for a test that is already
+/// `parametrize`d, has no body beyond a docstring, or is too short to be worth
+/// merging.
+#[must_use]
+pub fn clone_shape(fn_node: Node, source: &[u8]) -> Option<String> {
+    const MIN_TOKENS: usize = 8;
+    if let Some(parent) = fn_node.parent() {
+        if parent.kind() == "decorated_definition"
+            && parent
+                .utf8_text(source)
+                .is_ok_and(|t| t.contains("parametrize"))
+        {
+            return None;
+        }
+    }
+    fn walk(node: Node, source: &[u8], out: &mut Vec<String>) {
+        match node.kind() {
+            "comment" => {}
+            "string" | "integer" | "float" | "concatenated_string" => out.push("L".into()),
+            _ if node.child_count() == 0 => {
+                if let Ok(text) = node.utf8_text(source) {
+                    out.push(text.to_string());
+                }
+            }
+            _ => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    walk(child, source, out);
+                }
+            }
+        }
+    }
+    let body = fn_node.child_by_field_name("body")?;
+    let mut cursor = body.walk();
+    let mut statements: Vec<Node> = body.children(&mut cursor).collect();
+    if statements.first().is_some_and(|s| {
+        s.kind() == "expression_statement" && s.child(0).is_some_and(|c| c.kind() == "string")
+    }) {
+        statements.remove(0);
+    }
+    let mut tokens = Vec::new();
+    for s in statements {
+        walk(s, source, &mut tokens);
+    }
+    (tokens.len() >= MIN_TOKENS).then(|| tokens.join(" "))
+}
+
 /// What a test checks and what it calls.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Fingerprint {

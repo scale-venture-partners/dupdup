@@ -65,6 +65,20 @@ impl Default for TautologicalAssertConfig {
     }
 }
 
+/// Settings for the `CLONE_TEST` rule.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct CloneTestConfig {
+    /// Whether this rule runs at all.
+    pub enabled: bool,
+}
+
+impl Default for CloneTestConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 /// The full `[dupdup]` table of `dupdup.toml`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -83,6 +97,9 @@ pub struct Config {
     /// `TAUTOLOGICAL_ASSERT` rule settings.
     #[serde(rename = "tautological_assert")]
     pub tautological_assert: TautologicalAssertConfig,
+    /// `CLONE_TEST` rule settings.
+    #[serde(rename = "clone_test")]
+    pub clone_test: CloneTestConfig,
 }
 
 #[derive(Debug, Default, Deserialize)]
