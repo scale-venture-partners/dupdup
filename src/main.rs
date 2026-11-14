@@ -58,6 +58,12 @@ enum Commands {
         /// benign (see the error message this would otherwise print).
         #[arg(long)]
         allow_incomplete_context: bool,
+        /// Count lines run by a test's fixtures (`setup`/`teardown`
+        /// phases) as that test's coverage. Off by default: fixture lines
+        /// aren't exercised by the test body, and a shared fixture makes
+        /// unrelated tests look like subsets of each other.
+        #[arg(long)]
+        include_fixtures: bool,
         /// Test-to-killed-mutant JSON (see `dupdup::dynamic::killmatrix` for
         /// the schema). No upstream tool produces this yet.
         #[arg(long)]
@@ -108,12 +114,14 @@ fn main() -> anyhow::Result<()> {
             coverage_json,
             junit_xml,
             allow_incomplete_context,
+            include_fixtures,
             kill_matrix_json,
             json,
         } => run_analyze(
             coverage_json.as_deref(),
             junit_xml.as_deref(),
             allow_incomplete_context,
+            include_fixtures,
             kill_matrix_json.as_deref(),
             json,
         ),
@@ -314,16 +322,17 @@ fn run_analyze(
     coverage_json: Option<&Path>,
     junit_xml: Option<&Path>,
     allow_incomplete_context: bool,
+    include_fixtures: bool,
     kill_matrix_json: Option<&Path>,
     json: bool,
 ) -> anyhow::Result<()> {
     let mut reports = Vec::new();
 
     if let Some(cov_path) = coverage_json {
-        let loaded = dynamic::coverage::load(cov_path)?;
+        let loaded = dynamic::coverage::load(cov_path, include_fixtures)?;
         match junit_xml {
             Some(junit_path) => check_context_completeness(
-                loaded.tests.len(),
+                loaded.tests_with_context,
                 junit_path,
                 allow_incomplete_context,
             )?,

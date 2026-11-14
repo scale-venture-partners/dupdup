@@ -183,6 +183,11 @@ on a mismatch rather than silently reporting on a partial suite. Passing
 `--coverage-json` without `--junit-xml` still works, with a warning that
 this check is skipped.
 
+Only the `run` phase of each test counts as its coverage by default.
+Lines executed by fixtures (the `setup`/`teardown` phases) aren't something
+the test body exercises, and a shared fixture makes unrelated tests look
+like subsets of each other. Pass `--include-fixtures` to count them anyway.
+
 A shortfall isn't always the sysmon bug, though — calibrating against a
 real suite found a context-count mismatch caused by tests that genuinely
 execute no traceable line in the covered package (a pure static-analysis

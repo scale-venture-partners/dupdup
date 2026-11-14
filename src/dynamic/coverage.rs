@@ -24,34 +24,50 @@ fn read_report(path: &Path) -> anyhow::Result<CoverageReport> {
 
 /// A coverage run's per-test line coverage, ready for `redundancy::analyze`.
 pub struct LoadedCoverage {
-    /// One entry per test id found in the coverage-json contexts.
+    /// One entry per test whose own body covered at least one line. With
+    /// fixtures excluded (the default), a test that only touched code in
+    /// its `setup`/`teardown` phase is left out, since it has no coverage
+    /// of its own to compare.
     pub tests: Vec<TestCoverage>,
+    /// How many distinct test ids had context data in any phase. This, not
+    /// `tests.len()`, is what a junit run's test count is checked against.
+    pub tests_with_context: usize,
 }
 
 /// A non-empty context is `<test id>|<phase>`; the empty string is the
 /// baseline context for code that ran outside any test. The test id can
 /// itself contain `|` (a parametrize id such as `test_x[a|b]`), so only a
-/// trailing known phase is split off, never the first `|`.
-fn context_test_id(context: &str) -> Option<&str> {
+/// trailing known phase is split off, never the first `|`. A context with
+/// no phase suffix has no phase.
+fn split_context(context: &str) -> Option<(&str, Option<&str>)> {
     if context.is_empty() {
         return None;
     }
     match context.rsplit_once('|') {
-        Some((id, "setup" | "run" | "teardown")) => Some(id),
-        _ => Some(context),
+        Some((id, phase @ ("setup" | "run" | "teardown"))) => Some((id, Some(phase))),
+        _ => Some((context, None)),
     }
+}
+
+fn context_test_id(context: &str) -> Option<&str> {
+    split_context(context).map(|(id, _)| id)
 }
 
 /// Loads a `coverage json --show-contexts` report from `path` and inverts
 /// its line-to-contexts map into one bitset per test.
 ///
+/// Lines run by a test's fixtures (`setup`/`teardown` phases) are not
+/// something its body exercises, so they only count when
+/// `include_fixtures` is set.
+///
 /// # Errors
 /// Returns an error if `path` can't be read or isn't valid coverage-json.
-pub fn load(path: &Path) -> anyhow::Result<LoadedCoverage> {
+pub fn load(path: &Path, include_fixtures: bool) -> anyhow::Result<LoadedCoverage> {
     let report = read_report(path)?;
 
     let mut requirement_index: HashMap<(String, String), usize> = HashMap::new();
     let mut per_test: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut seen: HashSet<String> = HashSet::new();
     let mut next_index = 0usize;
 
     for (file, file_report) in &report.files {
@@ -63,7 +79,11 @@ pub fn load(path: &Path) -> anyhow::Result<LoadedCoverage> {
                 idx
             });
             for context in contexts {
-                if let Some(test_id) = context_test_id(context) {
+                let Some((test_id, phase)) = split_context(context) else {
+                    continue;
+                };
+                seen.insert(test_id.to_string());
+                if include_fixtures || phase != Some("setup") && phase != Some("teardown") {
                     per_test
                         .entry(test_id.to_string())
                         .or_default()
@@ -88,7 +108,10 @@ pub fn load(path: &Path) -> anyhow::Result<LoadedCoverage> {
         })
         .collect();
 
-    Ok(LoadedCoverage { tests })
+    Ok(LoadedCoverage {
+        tests,
+        tests_with_context: seen.len(),
+    })
 }
 
 /// Per-`(file, line)` coverage, keyed exactly as `coverage json` recorded
@@ -192,7 +215,7 @@ mod tests {
                 }
             }"#,
         );
-        let loaded = load(f.path()).unwrap();
+        let loaded = load(f.path(), false).unwrap();
         let by_id: HashMap<_, _> = loaded
             .tests
             .iter()
@@ -208,12 +231,54 @@ mod tests {
         );
     }
 
+    const FIXTURE_REPORT: &str = r#"{"files":{"pkg/m.py":{"contexts":{
+        "1":["t.py::test_small|setup","t.py::test_big|setup"],
+        "2":["t.py::test_small|run","t.py::test_big|setup"],
+        "3":["t.py::test_big|setup"],
+        "4":["t.py::test_big|setup"],
+        "5":["t.py::test_big|run"]}}}}"#;
+
+    #[test]
+    fn fixture_lines_are_excluded_by_default() {
+        let f = write_report(FIXTURE_REPORT);
+        let loaded = load(f.path(), false).unwrap();
+        let by_id: HashMap<_, _> = loaded
+            .tests
+            .iter()
+            .map(|t| (t.test_id.as_str(), t.bits.count_ones(..)))
+            .collect();
+        assert_eq!(by_id["t.py::test_small"], 1);
+        assert_eq!(by_id["t.py::test_big"], 1);
+    }
+
+    #[test]
+    fn fixture_lines_count_when_included() {
+        let f = write_report(FIXTURE_REPORT);
+        let loaded = load(f.path(), true).unwrap();
+        let big = loaded
+            .tests
+            .iter()
+            .find(|t| t.test_id == "t.py::test_big")
+            .unwrap();
+        assert_eq!(big.bits.count_ones(..), 5);
+    }
+
+    #[test]
+    fn a_test_with_only_fixture_coverage_has_context_but_no_analysis_entry() {
+        let f = write_report(
+            r#"{"files":{"pkg/m.py":{"contexts":{"1":["t.py::test_a|setup"],"2":["t.py::test_b|run"]}}}}"#,
+        );
+        let loaded = load(f.path(), false).unwrap();
+        assert_eq!(loaded.tests.len(), 1);
+        assert_eq!(loaded.tests_with_context, 2);
+    }
+
     #[test]
     fn a_pipe_inside_a_parametrize_id_is_kept() {
         let f = write_report(
             r#"{"files": {"pkg/mod.py": {"contexts": {"1": ["t.py::test_p[a|b]|run"]}}}}"#,
         );
-        let loaded = load(f.path()).unwrap();
+        let loaded = load(f.path(), false).unwrap();
         assert_eq!(loaded.tests.len(), 1);
         assert_eq!(loaded.tests[0].test_id, "t.py::test_p[a|b]");
     }
@@ -230,7 +295,7 @@ mod tests {
     #[test]
     fn empty_context_is_not_a_test() {
         let f = write_report(r#"{"files": {"pkg/mod.py": {"contexts": {"1": [""]}}}}"#);
-        let loaded = load(f.path()).unwrap();
+        let loaded = load(f.path(), false).unwrap();
         assert!(loaded.tests.is_empty());
     }
 
