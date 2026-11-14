@@ -79,6 +79,20 @@ impl Default for CloneTestConfig {
     }
 }
 
+/// Settings for the `WEAK_ASSERTIONS` rule.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct WeakAssertionsConfig {
+    /// Whether this rule runs at all.
+    pub enabled: bool,
+}
+
+impl Default for WeakAssertionsConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 /// The full `[dupdup]` table of `dupdup.toml`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -97,6 +111,9 @@ pub struct Config {
     /// `TAUTOLOGICAL_ASSERT` rule settings.
     #[serde(rename = "tautological_assert")]
     pub tautological_assert: TautologicalAssertConfig,
+    /// `WEAK_ASSERTIONS` rule settings.
+    #[serde(rename = "weak_assertions")]
+    pub weak_assertions: WeakAssertionsConfig,
     /// `CLONE_TEST` rule settings.
     #[serde(rename = "clone_test")]
     pub clone_test: CloneTestConfig,
