@@ -296,6 +296,132 @@ pub fn check_weak_assertions(
     })
 }
 
+/// Names bound in the test to a mock the test created itself: `m = Mock()`,
+/// `m = AsyncMock(...)`, `m = MagicMock(...)`, `m = create_autospec(...)`, or
+/// `with patch(...) as m`.
+fn local_mock_names(fn_node: Node, source: &[u8]) -> Vec<String> {
+    const FACTORIES: [&str; 4] = ["Mock(", "MagicMock(", "AsyncMock(", "create_autospec("];
+    let mut names = Vec::new();
+    let mut stack = vec![fn_node];
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "assignment" => {
+                let left = node.child_by_field_name("left");
+                let right = node.child_by_field_name("right");
+                if let (Some(l), Some(r)) = (left, right) {
+                    let rt = r.utf8_text(source).unwrap_or("");
+                    let rt = rt.trim_start_matches("await ");
+                    let tail = rt.rsplit('.').next().unwrap_or(rt);
+                    if l.kind() == "identifier"
+                        && (FACTORIES
+                            .iter()
+                            .any(|f| rt.starts_with(f) || tail.starts_with(f)))
+                    {
+                        if let Ok(n) = l.utf8_text(source) {
+                            names.push(n.to_string());
+                        }
+                    }
+                }
+            }
+            "as_pattern" => {
+                let call = node.child(0).and_then(|c| c.utf8_text(source).ok());
+                let alias = node.named_child(node.named_child_count().saturating_sub(1));
+                if let (Some(call), Some(alias)) = (call, alias) {
+                    if call.contains("patch") {
+                        if let Ok(n) = alias.utf8_text(source) {
+                            names.push(n.trim().to_string());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        let mut cursor = node.walk();
+        for c in node.children(&mut cursor) {
+            if c.kind() != "function_definition" {
+                stack.push(c);
+            }
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// A test that calls a mock it created itself and then asserts only on mocks:
+/// it checks its own wiring, not the code under test.
+#[must_use]
+pub fn check_mock_only_assert(fn_node: Node, source: &[u8]) -> Option<Violation> {
+    let mocks = local_mock_names(fn_node, source);
+    if mocks.is_empty() {
+        return None;
+    }
+    let is_mock = |n: &str| mocks.iter().any(|m| m == n);
+
+    let mut calls = Vec::new();
+    collect_excluding_nested_defs(fn_node, "call", true, &mut calls);
+    let mut called_directly = false;
+    let mut other_assertion = false;
+    let mut mock_assertion = false;
+    for call in &calls {
+        let Some(func) = call.child_by_field_name("function") else {
+            continue;
+        };
+        match func.kind() {
+            "identifier" => {
+                let name = func.utf8_text(source).unwrap_or("");
+                if is_mock(name) {
+                    called_directly = true;
+                } else if name.trim_start_matches('_').starts_with("assert") || name == "fail" {
+                    other_assertion = true;
+                }
+            }
+            "attribute" => {
+                let object = func
+                    .child_by_field_name("object")
+                    .and_then(|o| o.utf8_text(source).ok())
+                    .unwrap_or("");
+                let attr = func
+                    .child_by_field_name("attribute")
+                    .and_then(|a| a.utf8_text(source).ok())
+                    .unwrap_or("");
+                let is_assertion = attr.trim_start_matches('_').starts_with("assert");
+                if is_assertion && is_mock(object) {
+                    mock_assertion = true;
+                } else if is_assertion || attr == "fail" {
+                    other_assertion = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    for a in assert_statements(fn_node) {
+        let text = normalize(a.utf8_text(source).unwrap_or(""));
+        let body = text.trim_start_matches("assert ").trim_start();
+        let subject: String = body
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if is_mock(&subject) && body[subject.len()..].starts_with('.') {
+            mock_assertion = true;
+        } else {
+            other_assertion = true;
+        }
+    }
+    if has_raises_context(fn_node, source) {
+        other_assertion = true;
+    }
+    (called_directly && mock_assertion && !other_assertion).then(|| Violation {
+        file: String::new(),
+        line: fn_node.start_position().row + 1,
+        severity: Severity::Warn,
+        rule: "MOCK_ONLY_ASSERT",
+        test_name: String::new(),
+        message: "calls a mock it created and asserts only on mocks; it tests its own wiring"
+            .into(),
+    })
+}
+
 /// What a test checks and what it calls.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Fingerprint {

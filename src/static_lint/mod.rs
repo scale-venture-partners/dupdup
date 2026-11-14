@@ -182,6 +182,9 @@ pub fn check_file_with_helpers(
                 }
             }),
         );
+        if config.mock_only_assert.enabled {
+            found.extend(rules::check_mock_only_assert(fn_node, source_bytes));
+        }
         if config.weak_assertions.enabled {
             found.extend(rules::check_weak_assertions(fn_node, source_bytes, helpers));
         }
@@ -476,5 +479,53 @@ mod tests {
         assert_eq!(weak("def test_a():\n    assert f() == 1\n"), 0);
         assert_eq!(weak("def test_a():\n    assert f() is None\n"), 0);
         assert_eq!(weak("def test_a():\n    assert len(f()) == 2\n"), 0);
+    }
+
+    fn mock_only(source: &str) -> usize {
+        check_file("f.py", source, &Config::default())
+            .unwrap()
+            .iter()
+            .filter(|v| v.rule == "MOCK_ONLY_ASSERT")
+            .count()
+    }
+
+    #[test]
+    fn calling_your_own_mock_and_asserting_on_it_is_flagged() {
+        assert_eq!(
+            mock_only(
+                "def test_a():\n    m = Mock()\n    m(1)\n    m.assert_called_once_with(1)\n"
+            ),
+            1
+        );
+        assert_eq!(
+            mock_only("async def test_a():\n    m = AsyncMock()\n    await m(1)\n    assert m.call_count == 1\n"),
+            1
+        );
+        assert_eq!(
+            mock_only("def test_a():\n    with patch('x.y') as m:\n        m(1)\n    m.assert_called_once()\n"),
+            1
+        );
+    }
+
+    #[test]
+    fn code_under_test_calling_the_mock_is_not_flagged() {
+        assert_eq!(
+            mock_only(
+                "def test_a():\n    m = Mock()\n    f(m)\n    m.assert_called_once_with(1)\n"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn a_real_assertion_alongside_clears_it() {
+        assert_eq!(
+            mock_only("def test_a():\n    m = Mock(return_value=2)\n    r = m(1)\n    m.assert_called_once()\n    assert r == 2\n"),
+            0
+        );
+        assert_eq!(
+            mock_only("def test_a():\n    m = Mock()\n    m(1)\n    m.assert_called_once()\n    mock_b.assert_called()\n"),
+            0
+        );
     }
 }
