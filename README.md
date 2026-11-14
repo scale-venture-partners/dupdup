@@ -103,6 +103,23 @@ Four relations, per source:
   the union of every other test, even though no single other test subsumes
   it alone (the "god test" case, in reverse).
 
+By default each test's assertions count as requirements too: its `assert`
+statements, assertion-style calls (`mock.assert_*`, `self.assertX`,
+`pytest.fail`), calls to asserting helpers, and `pytest.raises` statements,
+compared in whitespace-insensitive source form with literals kept. Two tests
+are only flagged as redundant if they cover the same code *and* make the
+same assertions. A test that asserts nothing never counts as redundant to
+one that does. dupdup reads each test's source from `--test-root` (the
+pytest rootdir, inside a git repo; default `.`), warns about tests it can't
+find and errors if it finds none. `--no-assertion-check` turns this off and
+compares line coverage alone.
+
+What survives is a test pair that runs the same code and checks the same
+thing, usually differing only in input or setup. Treat those as
+merge-into-`parametrize` candidates first and deletion candidates second:
+same lines and same assertions doesn't prove the inputs exercise the same
+behaviour.
+
 Each test gets at most one finding per relation: `DUPLICATE_COVERAGE` is
 reported once per group of identical tests (from its first member, naming
 the rest), and `SUBSUMED_COVERAGE` names only the tightest superset test,

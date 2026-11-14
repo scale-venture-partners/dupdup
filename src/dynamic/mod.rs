@@ -11,3 +11,6 @@ pub mod junit;
 /// Loads a test-to-killed-mutant kill matrix (input contract only — no
 /// upstream producer exists yet).
 pub mod killmatrix;
+
+/// Folds what each test asserts into its requirement set.
+pub mod assertions;

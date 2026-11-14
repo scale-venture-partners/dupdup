@@ -70,6 +70,16 @@ enum Commands {
         /// can cover the same lines and check different things.
         #[arg(long)]
         removal_set: bool,
+        /// Directory the coverage run's test paths are relative to (the
+        /// pytest rootdir), inside a git repo. Default: the current directory.
+        #[arg(long, default_value = ".")]
+        test_root: PathBuf,
+        /// Skip reading each test's source. By default two tests only count
+        /// as redundant if they also make the same assertions; without
+        /// this, line coverage alone decides, which flags tests that run the
+        /// same code to check different things.
+        #[arg(long)]
+        no_assertion_check: bool,
         /// Test-to-killed-mutant JSON (see `dupdup::dynamic::killmatrix` for
         /// the schema). No upstream tool produces this yet.
         #[arg(long)]
@@ -122,17 +132,21 @@ fn main() -> anyhow::Result<()> {
             allow_incomplete_context,
             include_fixtures,
             removal_set,
+            test_root,
+            no_assertion_check,
             kill_matrix_json,
             json,
-        } => run_analyze(
-            coverage_json.as_deref(),
-            junit_xml.as_deref(),
+        } => run_analyze(&AnalyzeOptions {
+            coverage_json: coverage_json.as_deref(),
+            junit_xml: junit_xml.as_deref(),
             allow_incomplete_context,
             include_fixtures,
             removal_set,
-            kill_matrix_json.as_deref(),
+            test_root: &test_root,
+            no_assertion_check,
+            kill_matrix_json: kill_matrix_json.as_deref(),
             json,
-        ),
+        }),
         Commands::Mutate {
             sources,
             coverage_json,
@@ -236,17 +250,7 @@ fn run_check(
         } else {
             git::all_files(&root)?
         };
-        // Helpers can live in any tracked Python file (conftest.py, a shared
-        // module), not only test files, so index every one of them.
-        let index_sources: Vec<String> = git::all_files(&root)?
-            .iter()
-            .filter(|p| p.extension().is_some_and(|e| e == "py"))
-            .filter_map(|p| std::fs::read_to_string(root.join(p)).ok())
-            .collect();
-        let helpers = static_lint::AssertingHelpers::build(
-            index_sources.iter().map(String::as_str),
-            &config.no_assertions.helpers,
-        );
+        let helpers = static_lint::helpers::index_repo(&root, &config.no_assertions.helpers)?;
         for rel_path in files {
             if !is_python_test_file(&rel_path) || is_excluded(&rel_path, &exclude_patterns) {
                 continue;
@@ -345,19 +349,74 @@ fn check_context_completeness(
     Ok(())
 }
 
-fn run_analyze(
-    coverage_json: Option<&Path>,
-    junit_xml: Option<&Path>,
+/// Folds each test's assertions into its requirement set. A test whose
+/// source can't be found gains none, so that is reported, and an
+/// all-unresolved run is an error: it almost always means a wrong
+/// `--test-root`, and silently falling back to coverage alone would bring
+/// back the noise this check exists to remove.
+fn add_assertions(tests: &mut [redundancy::TestCoverage], test_root: &Path) -> anyhow::Result<()> {
+    if tests.is_empty() {
+        return Ok(());
+    }
+    let root = git::repo_root(test_root)?;
+    let rel = test_root.canonicalize()?;
+    let helpers = static_lint::helpers::index_repo(&root, &[])?;
+    let fingerprints =
+        dynamic::assertions::load(tests.iter().map(|t| t.test_id.as_str()), &rel, &helpers);
+    if fingerprints.unresolved == tests.len() {
+        anyhow::bail!(
+            "none of the {} tests' source files were found under {}. Pass --test-root \
+             (the pytest rootdir the coverage run used), or --no-assertion-check to \
+             compare line coverage alone.",
+            tests.len(),
+            rel.display()
+        );
+    }
+    if fingerprints.unresolved > 0 {
+        eprintln!(
+            "warning: {} of {} tests' source could not be found under {}; they are compared \
+             on line coverage alone",
+            fingerprints.unresolved,
+            tests.len(),
+            rel.display()
+        );
+    }
+    dynamic::assertions::augment(tests, &fingerprints);
+    Ok(())
+}
+
+/// Everything `dupdup analyze` was asked to do.
+struct AnalyzeOptions<'a> {
+    coverage_json: Option<&'a Path>,
+    junit_xml: Option<&'a Path>,
     allow_incomplete_context: bool,
     include_fixtures: bool,
     removal_set: bool,
-    kill_matrix_json: Option<&Path>,
+    test_root: &'a Path,
+    no_assertion_check: bool,
+    kill_matrix_json: Option<&'a Path>,
     json: bool,
-) -> anyhow::Result<()> {
+}
+
+fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
+    let AnalyzeOptions {
+        coverage_json,
+        junit_xml,
+        allow_incomplete_context,
+        include_fixtures,
+        removal_set,
+        test_root,
+        no_assertion_check,
+        kill_matrix_json,
+        json,
+    } = *opts;
     let mut reports = Vec::new();
 
     if let Some(cov_path) = coverage_json {
-        let loaded = dynamic::coverage::load(cov_path, include_fixtures)?;
+        let mut loaded = dynamic::coverage::load(cov_path, include_fixtures)?;
+        if !no_assertion_check {
+            add_assertions(&mut loaded.tests, test_root)?;
+        }
         let mut findings = redundancy::analyze(&loaded.tests);
         match junit_xml {
             Some(junit_path) => {

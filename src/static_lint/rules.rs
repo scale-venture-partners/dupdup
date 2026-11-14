@@ -172,6 +172,88 @@ pub fn called_names(fn_node: Node, source: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// A whitespace-insensitive rendering of `node`: its leaf tokens joined by
+/// a single space, comments dropped. Literals are kept, so `x == 1` and
+/// `x == 2` stay different.
+fn token_text(node: Node, source: &[u8]) -> String {
+    fn walk(node: Node, source: &[u8], out: &mut Vec<String>) {
+        if node.kind() == "comment" {
+            return;
+        }
+        if node.child_count() == 0 || node.kind() == "string" {
+            if let Ok(text) = node.utf8_text(source) {
+                out.push(text.to_string());
+            }
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk(child, source, out);
+        }
+    }
+    let mut tokens = Vec::new();
+    walk(node, source, &mut tokens);
+    tokens.join(" ")
+}
+
+/// What the test checks, as comparable strings: each `assert` statement, each
+/// assertion-style call (`mock.assert_*(...)`, `self.assertX(...)`,
+/// `pytest.fail(...)`), each call to an asserting helper, and each
+/// `pytest.raises(...)` statement, in whitespace-insensitive source form.
+/// Sorted and deduplicated. Two tests with different fingerprints check
+/// different things, whatever code they happen to run.
+#[must_use]
+pub fn assertion_fingerprint(
+    fn_node: Node,
+    source: &[u8],
+    helpers: &super::helpers::AssertingHelpers,
+) -> Vec<String> {
+    let mut out: Vec<String> = assert_statements(fn_node)
+        .iter()
+        .map(|n| token_text(*n, source))
+        .collect();
+
+    let mut calls = Vec::new();
+    collect_excluding_nested_defs(fn_node, "call", true, &mut calls);
+    for call in calls {
+        let Some(func) = call.child_by_field_name("function") else {
+            continue;
+        };
+        let name_node = match func.kind() {
+            "attribute" => func.child_by_field_name("attribute"),
+            "identifier" => Some(func),
+            _ => None,
+        };
+        let Some(name) = name_node.and_then(|n| n.utf8_text(source).ok()) else {
+            continue;
+        };
+        let trimmed = name.trim_start_matches('_');
+        let assertion_call =
+            (trimmed.starts_with("assert") && trimmed.len() > "assert".len()) || trimmed == "fail";
+        if assertion_call || helpers.contains(name) {
+            out.push(token_text(call, source));
+        }
+    }
+
+    for with in with_statements(fn_node) {
+        let mut cursor = with.walk();
+        let clause = with
+            .children(&mut cursor)
+            .find(|c| c.kind() == "with_clause");
+        if let Some(clause) = clause {
+            if token_text(clause, source).contains("raises") {
+                // The whole statement, not just the clause: what is called
+                // inside is what is expected to raise.
+                out.push(token_text(with, source));
+            }
+        }
+    }
+
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// A test with no `assert`, no `mock`/unittest-style `.assert*(...)` call,
 /// no call to a helper known to assert (`helpers`), and no
 /// `pytest.raises`/`assertRaises` context passes no matter what the code
