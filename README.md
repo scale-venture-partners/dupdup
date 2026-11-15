@@ -78,6 +78,23 @@ dupdup check --all      # check every git-tracked test file
 dupdup check --json --staged
 ```
 
+### Running it on every PR
+
+`dupdup check --all` over a ~5k-test suite takes about two seconds, so it
+fits a PR check. To adopt it without fixing existing findings first, record
+them and fail only on new ones:
+
+```bash
+dupdup check --all --write-baseline .dupdup-baseline.json   # once, commit the file
+dupdup check --all --baseline .dupdup-baseline.json          # in CI: exit 1 only on new errors
+```
+
+A baseline entry is the file, rule and test name, not the line, so it
+survives edits above it. The check prints how many violations the baseline
+absorbed and how many entries no longer occur (debt paid down; re-write the
+baseline to drop them). A missing baseline file is an error, not an empty
+baseline. Nothing here needs coverage, mutation or a test run.
+
 A `# dupdup: ignore[RULE]` comment on the flagged line (or the line above)
 suppresses it, same placement as windbag.
 

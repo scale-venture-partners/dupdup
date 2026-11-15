@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use dupdup::config::Config;
 use dupdup::static_lint::rules::Severity;
-use dupdup::{dynamic, git, mutate, output, redundancy, static_lint};
+use dupdup::{baseline, dynamic, git, mutate, output, redundancy, static_lint};
 use output::AnalyzeReport;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
@@ -37,6 +37,15 @@ enum Commands {
         /// Path to config file
         #[arg(long, default_value = "dupdup.toml")]
         config: PathBuf,
+        /// Report only violations not listed in this baseline file (written
+        /// with --write-baseline). Existing debt doesn't fail the check; new
+        /// debt does. The line number isn't part of the match.
+        #[arg(long, conflicts_with = "write_baseline")]
+        baseline: Option<PathBuf>,
+        /// Write the current violations to this file as the baseline, and
+        /// exit 0.
+        #[arg(long)]
+        write_baseline: Option<PathBuf>,
     },
     /// Redundancy analysis over a coverage run and/or a mutation kill-matrix.
     /// Requires executing the test suite first — this is not a linter.
@@ -232,7 +241,17 @@ fn main() -> anyhow::Result<()> {
             all,
             json,
             config,
-        } => run_check(&paths, staged, all, json, &config),
+            baseline,
+            write_baseline,
+        } => run_check(
+            &paths,
+            staged,
+            all,
+            json,
+            &config,
+            baseline.as_deref(),
+            write_baseline.as_deref(),
+        ),
         Commands::Analyze {
             coverage_json,
             coverage_data,
@@ -478,6 +497,8 @@ fn run_check(
     all: bool,
     json: bool,
     config_path: &Path,
+    baseline_path: Option<&Path>,
+    write_baseline_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     let modes = [!paths.is_empty(), staged, all]
         .iter()
@@ -548,6 +569,28 @@ fn run_check(
                 &helpers,
             )?);
         }
+    }
+
+    if let Some(path) = write_baseline_path {
+        let n = baseline::write(path, &violations)?;
+        eprintln!(
+            "wrote {n} baseline entr{} to {}",
+            if n == 1 { "y" } else { "ies" },
+            path.display()
+        );
+        return Ok(());
+    }
+    if let Some(path) = baseline_path {
+        let filtered = baseline::filter(violations, &baseline::load(path)?);
+        eprintln!(
+            "{} new violation(s); {} known in the baseline, {} baseline entr{} no longer occur{}",
+            filtered.new.len(),
+            filtered.known,
+            filtered.fixed,
+            if filtered.fixed == 1 { "y" } else { "ies" },
+            if filtered.fixed == 1 { "s" } else { "" }
+        );
+        violations = filtered.new;
     }
 
     if json {

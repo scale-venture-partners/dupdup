@@ -18,6 +18,9 @@ pub mod redundancy;
 /// Static, tree-sitter-based rules over Python test source.
 pub mod static_lint;
 
+/// A baseline of known static violations, so CI fails only on new ones.
+pub mod baseline;
+
 /// The tests a change adds or edits, found against a base revision.
 pub mod changed;
 
