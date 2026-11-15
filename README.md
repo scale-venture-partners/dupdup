@@ -9,6 +9,15 @@ Finds duplicative, redundant, and useless tests. The counterpart to a
 mutation-testing tool that grows a suite (more tests to kill more mutants):
 dupdup prunes it.
 
+dupdup is a complement to [mutmut](https://github.com/boxed/mutmut), not a
+replacement for it. mutmut generates mutants and tells you which survive, so
+you can write tests that kill them; it does not record *which test* killed a
+mutant, which is the one fact needed to see that a test earns nothing. dupdup
+reads mutmut's mutants (`mutate --from-mutmut`) and adds that attribution, then
+looks for the tests no mutant needs. dupdup brings no mutation operators of its
+own on that path, and its built-in `mutate` collector (point and `--extreme`
+mutations) is a stand-in for projects that don't run mutmut.
+
 It has two independent tiers, because the techniques that actually find
 redundant tests split cleanly along one line — whether they need to execute
 the suite:
@@ -369,6 +378,16 @@ cost up to one more full timeout per candidate for every slow mutant; it's
 reported as inconclusive and excluded, same as a batch that fails without
 any single candidate reproducing the failure alone (a sign of test-order
 coupling, not a clean per-test result).
+
+`--from-mutmut DIR` uses the mutants mutmut 3 already generated (the `mutants/`
+folder in `DIR`, after `mutmut run`) instead of generating any: each mutant is
+selected with `MUTANT_UNDER_TEST`, run against the tests mutmut records as
+covering its function, `--jobs` at a time, and the tests that fail are the
+killers (from a JUnit report; the drill-down fallback and `--max-drilldown`
+apply as above). No source file is rewritten, so runs are safe to parallelize
+and interrupt. Give `--pytest-cmd` a command that works from inside the
+`mutants/` folder (an absolute interpreter path is simplest). The matrix has
+the same format, so `analyze --kill-matrix-json` is unchanged.
 
 `--out kills.json` writes the matrix after every source file (atomically)
 instead of printing it at the end, so a long run can be inspected while it

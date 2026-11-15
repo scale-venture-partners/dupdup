@@ -13,6 +13,10 @@
 /// Mutant generation: the tree-sitter walk and the fixed operator table.
 pub mod operators;
 
+/// Reads a mutmut run's mutants and attributes each kill to the tests that
+/// failed.
+pub mod mutmut;
+
 use crate::dynamic::coverage::LineCoverage;
 use crate::git;
 use anyhow::Context;
@@ -24,6 +28,7 @@ use std::time::{Duration, Instant};
 
 /// How to invoke pytest, and how long to give each invocation before
 /// giving up on attributing a mutant.
+#[derive(Clone)]
 pub struct RunConfig {
     /// The base command, e.g. `["python", "-m", "pytest"]` — one or more
     /// pytest node ids are appended as trailing arguments per invocation.
@@ -42,9 +47,14 @@ pub struct RunConfig {
     /// candidates that costs a process per test, so the mutant is left out
     /// as inconclusive instead.
     pub max_drilldown: usize,
+    /// Extra environment variables for every pytest invocation (mutmut mode
+    /// selects a mutant with `MUTANT_UNDER_TEST`).
+    pub env: Vec<(String, String)>,
+    /// Working directory for every pytest invocation, when not the current one.
+    pub cwd: Option<PathBuf>,
 }
 
-enum Outcome {
+pub(crate) enum Outcome {
     KilledBy(Vec<String>),
     Survived,
     NoCoverage,
@@ -99,27 +109,29 @@ fn verify_node_ids(pytest_cmd: &[String], node_ids: &[String]) -> anyhow::Result
 /// Runs `cmd` with `node_ids` appended, waiting up to `timeout`. `Ok(None)`
 /// means it was killed for exceeding the timeout; otherwise the process's
 /// own exit code.
-fn run_pytest(
-    cmd: &[String],
-    node_ids: &[String],
-    timeout: Duration,
-) -> anyhow::Result<Option<i32>> {
-    run_pytest_with(cmd, &[], node_ids, timeout)
+fn run_pytest(cfg: &RunConfig, node_ids: &[String]) -> anyhow::Result<Option<i32>> {
+    run_pytest_with(cfg, &[], node_ids)
 }
 
 /// [`run_pytest`] with extra arguments placed before the node ids.
 fn run_pytest_with(
-    cmd: &[String],
+    cfg: &RunConfig,
     extra: &[String],
     node_ids: &[String],
-    timeout: Duration,
 ) -> anyhow::Result<Option<i32>> {
-    let mut child = Command::new(&cmd[0])
+    let cmd = &cfg.pytest_cmd;
+    let mut command = Command::new(&cmd[0]);
+    command
         .args(&cmd[1..])
         .args(extra)
         .args(node_ids)
+        .envs(cfg.env.iter().map(|(k, v)| (k, v)))
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(dir) = &cfg.cwd {
+        command.current_dir(dir);
+    }
+    let mut child = command
         .spawn()
         .with_context(|| format!("failed to run `{}`", command_string(cmd, node_ids)))?;
 
@@ -128,7 +140,7 @@ fn run_pytest_with(
         if let Some(status) = child.try_wait()? {
             return Ok(status.code());
         }
-        if start.elapsed() > timeout {
+        if start.elapsed() > cfg.timeout {
             let _ = child.kill();
             let _ = child.wait();
             return Ok(None);
@@ -141,7 +153,7 @@ fn run_pytest_with(
 /// `verify_node_ids` that every id in `candidates` is real: any nonzero
 /// exit here is a genuine failure (or hang) under the mutant, never a bad
 /// node id.
-fn run_mutant(cfg: &RunConfig, candidates: &[String]) -> anyhow::Result<Outcome> {
+pub(crate) fn run_mutant(cfg: &RunConfig, candidates: &[String]) -> anyhow::Result<Outcome> {
     static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     if candidates.is_empty() {
         return Ok(Outcome::NoCoverage);
@@ -154,7 +166,7 @@ fn run_mutant(cfg: &RunConfig, candidates: &[String]) -> anyhow::Result<Outcome>
         RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let extra = [format!("--junitxml={}", report.display())];
-    let exit = run_pytest_with(&cfg.pytest_cmd, &extra, candidates, cfg.timeout)?;
+    let exit = run_pytest_with(cfg, &extra, candidates)?;
     let failed = crate::dynamic::junit::load(&report)
         .map(|s| s.failed_tests)
         .unwrap_or_default();
@@ -179,7 +191,7 @@ fn run_mutant(cfg: &RunConfig, candidates: &[String]) -> anyhow::Result<Outcome>
             let mut killers = Vec::new();
             for id in candidates {
                 let single = std::slice::from_ref(id);
-                match run_pytest(&cfg.pytest_cmd, single, cfg.timeout)? {
+                match run_pytest(cfg, single)? {
                     Some(0) => {}
                     // Failed or hung alone: unambiguously this test's doing.
                     None | Some(_) => killers.push(id.clone()),
@@ -236,7 +248,12 @@ struct PreparedSource {
 /// as `COVERS_NOTHING`). Only `killers` are credited with `mutant_id`. A
 /// test that never ran against an evaluated mutant gets no entry: "this test
 /// could not have killed anything" isn't established for it.
-fn credit(matrix: &mut KillMatrix, candidates: &[String], killers: &[String], mutant_id: &str) {
+pub(crate) fn credit(
+    matrix: &mut KillMatrix,
+    candidates: &[String],
+    killers: &[String],
+    mutant_id: &str,
+) {
     for t in candidates {
         matrix.tests.entry(t.clone()).or_default();
         *matrix.evaluated.entry(t.clone()).or_default() += 1;
