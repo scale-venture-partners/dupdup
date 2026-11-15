@@ -163,6 +163,21 @@ enum Commands {
         #[arg(long, default_value_t = 100)]
         max_drilldown: usize,
     },
+    /// List the tests this change adds or edits compared with a base
+    /// revision, one pytest node id per line (`pytest $(dupdup changed-tests
+    /// --base origin/main)` runs just those). Cases of a parametrized test are
+    /// selected together.
+    ChangedTests {
+        /// The revision to compare with: a branch, tag or SHA, e.g. origin/main
+        #[arg(long)]
+        base: String,
+        /// Emit JSON (node id and new/changed) instead of plain ids
+        #[arg(long)]
+        json: bool,
+        /// Path to config file (its `exclude` globs apply)
+        #[arg(long, default_value = "dupdup.toml")]
+        config: PathBuf,
+    },
     /// Write a default dupdup.toml to the current directory
     Init,
 }
@@ -227,6 +242,7 @@ fn main() -> anyhow::Result<()> {
             resume,
             max_drilldown,
         }),
+        Commands::ChangedTests { base, json, config } => run_changed_tests(&base, json, &config),
         Commands::Init => run_init(),
     }
 }
@@ -244,6 +260,25 @@ enabled = true
 [dupdup.tautological_assert]
 enabled = true
 ";
+
+fn run_changed_tests(base: &str, json: bool, config_path: &Path) -> anyhow::Result<()> {
+    let config = Config::load(config_path)?;
+    let exclude = compile_globs(&config.exclude)?;
+    let root = git::repo_root(&std::env::current_dir()?)?;
+    let files: Vec<PathBuf> = git::all_files(&root)?
+        .into_iter()
+        .filter(|p| is_python_test_file(p) && !is_excluded(p, &exclude))
+        .collect();
+    let touched = dupdup::changed::touched_tests(&root, base, &files)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&touched)?);
+    } else {
+        for t in &touched {
+            println!("{}", t.node_id);
+        }
+    }
+    Ok(())
+}
 
 fn run_init() -> anyhow::Result<()> {
     let path = PathBuf::from("dupdup.toml");
