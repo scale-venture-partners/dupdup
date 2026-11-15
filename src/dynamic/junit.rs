@@ -5,7 +5,7 @@ use std::path::Path;
 /// Counts from a pytest `--junitxml` report, split by whether the test body
 /// actually executed. A `<failure>` still means the body ran (and so
 /// contributed coverage); `<skipped>`/`<error>` mean it didn't.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct JunitSummary {
     /// Test cases that ran to completion, passed or failed.
     pub ran: usize,
@@ -20,6 +20,9 @@ pub struct JunitSummary {
     /// The `classname::name` of each test case that has a `<failure>` or an
     /// `<error>` child.
     pub failed_tests: Vec<String>,
+    /// Seconds each test case took, by `classname::name`, for every case with
+    /// a `time` attribute (skipped and errored ones included).
+    pub seconds_by_test: std::collections::HashMap<String, f64>,
 }
 
 /// The junit `classname::name` of a pytest node id:
@@ -75,6 +78,13 @@ pub fn load(path: &Path) -> anyhow::Result<JunitSummary> {
     parse(&text)
 }
 
+fn case_seconds(e: &quick_xml::events::BytesStart) -> Option<f64> {
+    e.attributes()
+        .flatten()
+        .find(|a| a.key.as_ref() == b"time")
+        .and_then(|a| a.unescape_value().ok()?.parse::<f64>().ok())
+}
+
 fn case_key(e: &quick_xml::events::BytesStart) -> String {
     let attr = |name: &[u8]| {
         e.attributes()
@@ -105,6 +115,9 @@ fn parse(xml: &str) -> anyhow::Result<JunitSummary> {
                     testcase_excluded = false;
                     current_failed = false;
                     current_key = case_key(&e);
+                    if let Some(s) = case_seconds(&e) {
+                        summary.seconds_by_test.insert(current_key.clone(), s);
+                    }
                 }
                 b"skipped" if in_testcase => {
                     testcase_excluded = true;
@@ -122,6 +135,9 @@ fn parse(xml: &str) -> anyhow::Result<JunitSummary> {
                 b"testcase" => {
                     summary.ran += 1;
                     summary.ran_tests.push(case_key(&e));
+                    if let Some(s) = case_seconds(&e) {
+                        summary.seconds_by_test.insert(case_key(&e), s);
+                    }
                 }
                 b"skipped" if in_testcase => {
                     testcase_excluded = true;
@@ -184,6 +200,14 @@ mod tests {
                 errored: 1,
                 ran_tests: vec!["t::passed".into(), "t::failed".into()],
                 failed_tests: vec!["t::failed".into(), "t::errored".into()],
+                seconds_by_test: [
+                    ("t::passed".to_string(), 0.01),
+                    ("t::failed".to_string(), 0.01),
+                    ("t::skipped".to_string(), 0.0),
+                    ("t::errored".to_string(), 0.0),
+                ]
+                .into_iter()
+                .collect(),
             }
         );
     }
@@ -217,5 +241,18 @@ mod tests {
         </testsuite>"#;
         let s = parse(xml).unwrap();
         assert_eq!(s.failed_tests, vec!["t::bad", "t::broken"]);
+    }
+
+    #[test]
+    fn seconds_are_read_per_test_including_self_closing_cases() {
+        let xml = r#"<testsuite>
+            <testcase classname="t" name="slow" time="2.5"/>
+            <testcase classname="t" name="fast" time="0.004"><failure/></testcase>
+            <testcase classname="t" name="untimed"/>
+        </testsuite>"#;
+        let s = parse(xml).unwrap();
+        assert_eq!(s.seconds_by_test["t::slow"], 2.5);
+        assert_eq!(s.seconds_by_test["t::fast"], 0.004);
+        assert!(!s.seconds_by_test.contains_key("t::untimed"));
     }
 }

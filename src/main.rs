@@ -826,9 +826,11 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
             add_assertions(&mut loaded.tests, test_root)?;
         }
         let mut findings = redundancy::analyze_with(&loaded.tests, union_relation);
+        let mut junit_times: Option<HashMap<String, f64>> = None;
         match junit_xml {
             Some(junit_path) => {
                 let summary = dynamic::junit::load(junit_path)?;
+                junit_times = Some(summary.seconds_by_test.clone());
                 check_context_completeness(
                     loaded.tests_with_context,
                     &summary,
@@ -846,6 +848,7 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
                             related: Vec::new(),
                             other_matches: 0,
                             evaluated: None,
+                            seconds: None,
                         }),
                 );
             }
@@ -864,13 +867,18 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
                         related: Vec::new(),
                         other_matches: 0,
                         evaluated: None,
+                        seconds: None,
                     }),
             );
         }
+        let runtime = junit_times.as_ref().map(|times| {
+            redundancy::attach_runtime(&mut findings, times, &dynamic::junit::junit_key)
+        });
         reports.push(AnalyzeReport {
             source: "coverage",
             findings,
             tests_analyzed: loaded.tests.len(),
+            runtime,
         });
     }
 
@@ -913,6 +921,7 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
                         related: Vec::new(),
                         other_matches: 0,
                         evaluated: None,
+                        seconds: None,
                     }),
             );
         }
@@ -920,6 +929,7 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
             source: "mutation",
             findings,
             tests_analyzed: loaded.tests.len(),
+            runtime: None,
         });
     }
 
@@ -932,6 +942,9 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
     if json {
         for report in &reports {
             if let Some(line) = report.flagged_summary() {
+                eprintln!("{line}");
+            }
+            if let Some(line) = report.runtime_summary() {
                 eprintln!("{line}");
             }
         }
@@ -1025,6 +1038,7 @@ mod tests {
             related: vec![],
             other_matches: 0,
             evaluated: Some(1),
+            seconds: None,
         }
     }
 

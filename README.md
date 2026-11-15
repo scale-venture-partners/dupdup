@@ -197,6 +197,12 @@ merge-into-`parametrize` candidates first and deletion candidates second:
 same lines and same assertions doesn't prove the inputs exercise the same
 behaviour.
 
+With `--junit-xml`, each finding carries the time of the test(s) it names
+(`(0.29s)`; for a duplicate group, the tests that would go), findings are
+sorted slowest first, and a summary line says how much of the suite's time the
+flagged tests take. Each test is counted once however many findings name it,
+so that figure is an upper bound on what acting on every finding would save.
+
 Each test gets at most one finding per relation: `DUPLICATE_COVERAGE` is
 reported once per group of identical tests (from its first member, naming
 the rest), and `SUBSUMED_COVERAGE` names only the tightest superset test,
