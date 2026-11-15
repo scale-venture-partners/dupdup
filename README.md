@@ -78,6 +78,14 @@ dupdup check --all      # check every git-tracked test file
 dupdup check --json --staged
 ```
 
+`dupdup changed-tests --base origin/main` prints the tests a change adds or
+edits, one pytest node id per line (class-qualified, no parametrize ids, so
+pytest selects every case): `pytest $(dupdup changed-tests --base origin/main)`
+runs just those. A test counts as edited when its definition, decorators
+included, differs from the base once whitespace and comments are ignored.
+It reads the base through `gix`, with no `git` binary, and takes about a
+second on a ~5k-test suite. `--json` adds new/changed.
+
 ### Running it on every PR
 
 `dupdup check --all` over a ~5k-test suite takes about two seconds, so it
