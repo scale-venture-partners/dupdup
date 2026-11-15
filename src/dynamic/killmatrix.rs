@@ -13,6 +13,9 @@ struct KillMatrixReport {
     /// Optional: per test, how many mutants it was run against.
     #[serde(default)]
     evaluated: HashMap<String, usize>,
+    /// Optional: the source files mutated, with their mutant counts.
+    #[serde(default)]
+    mutated: HashMap<String, usize>,
 }
 
 /// A kill matrix's per-test killed-mutant coverage, ready for
@@ -22,6 +25,9 @@ pub struct LoadedKillMatrix {
     pub tests: Vec<TestCoverage>,
     /// How many mutants each test was run against, when the matrix says.
     pub evaluated: HashMap<String, usize>,
+    /// The source files that were mutated, with mutant counts, when the
+    /// matrix says.
+    pub mutated: HashMap<String, usize>,
 }
 
 /// Loads a `{"tests": {"<test id>": ["<mutant id>", ...]}}` kill-matrix
@@ -62,6 +68,7 @@ pub fn load(path: &Path) -> anyhow::Result<LoadedKillMatrix> {
     Ok(LoadedKillMatrix {
         tests,
         evaluated: report.evaluated,
+        mutated: report.mutated,
     })
 }
 

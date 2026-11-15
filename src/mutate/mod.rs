@@ -37,6 +37,11 @@ pub struct RunConfig {
     /// One mutant per function (the body replaced by a trivial value)
     /// instead of the point mutations.
     pub extreme: bool,
+    /// When a batch fails and its JUnit report names no candidate, each
+    /// candidate is re-run alone to attribute the failure. Above this many
+    /// candidates that costs a process per test, so the mutant is left out
+    /// as inconclusive instead.
+    pub max_drilldown: usize,
 }
 
 enum Outcome {
@@ -70,20 +75,24 @@ fn verify_node_ids(pytest_cmd: &[String], node_ids: &[String]) -> anyhow::Result
     ids.dedup();
     let ids: Vec<String> = ids.into_iter().cloned().collect();
 
-    let output = Command::new(&pytest_cmd[0])
-        .args(&pytest_cmd[1..])
-        .arg("--collect-only")
-        .arg("-q")
-        .args(&ids)
-        .output()
-        .with_context(|| format!("failed to run `{}`", command_string(pytest_cmd, &ids)))?;
-    anyhow::ensure!(
-        output.status.success(),
-        "one or more test ids from the coverage report don't resolve under `{}` — the coverage \
-         report may be stale relative to the current test suite:\n{}",
-        command_string(pytest_cmd, &ids),
-        String::from_utf8_lossy(&output.stderr),
-    );
+    // In chunks, so a large coverage report can't exceed the argument-length
+    // limit of a single command.
+    for chunk in ids.chunks(400) {
+        let output = Command::new(&pytest_cmd[0])
+            .args(&pytest_cmd[1..])
+            .arg("--collect-only")
+            .arg("-q")
+            .args(chunk)
+            .output()
+            .with_context(|| format!("failed to run `{}`", command_string(pytest_cmd, chunk)))?;
+        anyhow::ensure!(
+            output.status.success(),
+            "one or more test ids from the coverage report don't resolve under `{}` — the \
+             coverage report may be stale relative to the current test suite:\n{}",
+            command_string(pytest_cmd, chunk),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
     Ok(())
 }
 
@@ -159,6 +168,11 @@ fn run_mutant(cfg: &RunConfig, candidates: &[String]) -> anyhow::Result<Outcome>
             let killers = killers_from_failures(candidates, &failed);
             if !killers.is_empty() {
                 return Ok(Outcome::KilledBy(killers));
+            }
+            if candidates.len() > cfg.max_drilldown {
+                return Ok(Outcome::Inconclusive(
+                    "the batch failed and has too many candidate tests to attribute one by one",
+                ));
             }
             // No readable failure list: attribute by running each candidate
             // alone.
@@ -238,12 +252,18 @@ fn credit(matrix: &mut KillMatrix, candidates: &[String], killers: &[String], mu
 
 /// What `collect` produces: the mutants each test killed, and how many
 /// mutants it was run against.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct KillMatrix {
     /// Killed mutant ids per test (an empty list: ran, killed none).
     pub tests: HashMap<String, Vec<String>>,
     /// Mutants each test was a candidate for, among those evaluated.
+    #[serde(default)]
     pub evaluated: HashMap<String, usize>,
+    /// The source files mutated so far, with the number of mutants each
+    /// produced. A finding in the matrix is relative to this scope; `--resume`
+    /// skips these files.
+    #[serde(default)]
+    pub mutated: HashMap<String, usize>,
 }
 
 /// Collects a kill matrix by mutating `sources` one at a time, restricting
@@ -265,14 +285,21 @@ pub fn collect(
     sources: &[PathBuf],
     coverage: &LineCoverage,
     cfg: &RunConfig,
+    resume: Option<KillMatrix>,
+    progress: &mut dyn FnMut(&KillMatrix) -> anyhow::Result<()>,
 ) -> anyhow::Result<KillMatrix> {
     anyhow::ensure!(!cfg.pytest_cmd.is_empty(), "pytest_cmd must not be empty");
 
+    let mut kills = resume.unwrap_or_default();
     let mut prepared = Vec::with_capacity(sources.len());
     let mut all_candidates: HashSet<String> = HashSet::new();
 
     for source in sources {
         let key = source.to_string_lossy().into_owned();
+        if kills.mutated.contains_key(&key) {
+            eprintln!("{key}: already mutated, skipping (resume)");
+            continue;
+        }
         if !coverage.has_file(&key) {
             let known = coverage.known_files();
             let listed: Vec<&str> = known.iter().take(50).copied().collect();
@@ -322,13 +349,14 @@ pub fn collect(
     let all_candidates: Vec<String> = all_candidates.into_iter().collect();
     verify_node_ids(&cfg.pytest_cmd, &all_candidates)?;
 
-    let mut kills = KillMatrix::default();
     let (mut killed, mut survived, mut no_coverage, mut inconclusive) =
         (0usize, 0usize, 0usize, 0usize);
 
     for source in &prepared {
         if source.mutants.is_empty() {
             eprintln!("{}: no mutation sites found", source.path.display());
+            kills.mutated.insert(source.key.clone(), 0);
+            progress(&kills)?;
             continue;
         }
         eprintln!(
@@ -381,6 +409,10 @@ pub fn collect(
 
         std::fs::remove_file(&backup)
             .with_context(|| format!("failed to remove backup {}", backup.display()))?;
+        kills
+            .mutated
+            .insert(source.key.clone(), source.mutants.len());
+        progress(&kills)?;
     }
 
     eprintln!(
