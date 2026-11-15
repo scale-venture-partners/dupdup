@@ -26,11 +26,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// How to invoke pytest, and how long to give each invocation before
-/// giving up on attributing a mutant.
 /// A function that narrows a mutant's candidate tests.
 pub type NarrowCandidates = std::sync::Arc<dyn Fn(Vec<String>) -> Vec<String> + Send + Sync>;
 
+/// How to invoke pytest, and how long to give each invocation before
+/// giving up on attributing a mutant.
 #[derive(Clone)]
 pub struct RunConfig {
     /// The base command, e.g. `["python", "-m", "pytest"]` — one or more
