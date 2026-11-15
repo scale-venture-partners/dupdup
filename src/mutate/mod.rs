@@ -28,6 +28,9 @@ use std::time::{Duration, Instant};
 
 /// How to invoke pytest, and how long to give each invocation before
 /// giving up on attributing a mutant.
+/// A function that narrows a mutant's candidate tests.
+pub type NarrowCandidates = std::sync::Arc<dyn Fn(Vec<String>) -> Vec<String> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct RunConfig {
     /// The base command, e.g. `["python", "-m", "pytest"]` — one or more
@@ -57,7 +60,7 @@ pub struct RunConfig {
     pub deadline: Option<Instant>,
     /// Narrows a mutant's candidate tests before they are run, e.g. to cap an
     /// otherwise huge set. Applied to every mutant's candidates.
-    pub narrow_candidates: Option<std::sync::Arc<dyn Fn(Vec<String>) -> Vec<String> + Send + Sync>>,
+    pub narrow_candidates: Option<NarrowCandidates>,
 }
 
 pub(crate) enum Outcome {

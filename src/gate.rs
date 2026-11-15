@@ -243,14 +243,13 @@ pub fn run(opts: &GateOptions, touched: &[TouchedTest]) -> anyhow::Result<Vec<Te
     let mut matrix = KillMatrix::default();
     let touched_for_cap: HashSet<String> = ids.iter().map(|s| (*s).to_string()).collect();
     let max_existing = opts.max_existing;
-    let narrow: std::sync::Arc<dyn Fn(Vec<String>) -> Vec<String> + Send + Sync> =
-        std::sync::Arc::new(move |all: Vec<String>| {
-            let (mut mine, others): (Vec<String>, Vec<String>) = all
-                .into_iter()
-                .partition(|id| touched_for_cap.contains(base_test_name(id)));
-            mine.extend(others.into_iter().take(max_existing));
-            mine
-        });
+    let narrow: mutate::NarrowCandidates = std::sync::Arc::new(move |all: Vec<String>| {
+        let (mut mine, others): (Vec<String>, Vec<String>) = all
+            .into_iter()
+            .partition(|id| touched_for_cap.contains(base_test_name(id)));
+        mine.extend(others.into_iter().take(max_existing));
+        mine
+    });
     for extreme in [true, false] {
         let cfg = RunConfig {
             pytest_cmd: opts.pytest_cmd.clone(),
