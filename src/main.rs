@@ -139,6 +139,13 @@ enum Commands {
         /// coverage report. --pytest-cmd runs inside that `mutants/` folder.
         #[arg(long, conflicts_with_all = ["sources", "coverage_json", "extreme"])]
         from_mutmut: Option<PathBuf>,
+        /// Run mutants by forking this many workers from one pytest process
+        /// (a bundled plugin; needs Python 3.11+ and fork) instead of one
+        /// process per mutant. The project is imported once, so this is far
+        /// faster when test startup is slow. 0 (default) keeps one process
+        /// per mutant.
+        #[arg(long, default_value_t = 0, conflicts_with = "from_mutmut")]
+        workers: usize,
         /// With --from-mutmut, how many mutants to run at once.
         #[arg(long, default_value_t = 4, requires = "from_mutmut")]
         jobs: usize,
@@ -212,12 +219,19 @@ enum Commands {
         /// Stop starting new mutants after this many seconds
         #[arg(long, default_value_t = 60)]
         budget_secs: u64,
-        /// Most existing tests per covered line to run beside the new ones
-        #[arg(long, default_value_t = 40)]
+        /// Most existing tests per mutant to run beside the new ones
+        #[arg(long, default_value_t = 80)]
         max_existing: usize,
         /// Per-invocation pytest timeout, in seconds
         #[arg(long, default_value_t = 30)]
         timeout_secs: u64,
+        /// Fork this many mutant workers per pytest process (needs Python
+        /// 3.11+ and fork)
+        #[arg(long, default_value_t = 4)]
+        workers: usize,
+        /// Run one pytest process per mutant instead of forking workers
+        #[arg(long)]
+        no_fork: bool,
         /// Emit JSON instead of text
         #[arg(long)]
         json: bool,
@@ -290,7 +304,9 @@ fn main() -> anyhow::Result<()> {
             max_drilldown,
             from_mutmut,
             jobs,
+            workers,
         } => run_mutate(&MutateOptions {
+            workers,
             sources: &sources,
             coverage_json: coverage_json.as_deref(),
             from_mutmut: from_mutmut.as_deref(),
@@ -311,10 +327,14 @@ fn main() -> anyhow::Result<()> {
             budget_secs,
             max_existing,
             timeout_secs,
+            workers,
+            no_fork,
             json,
             strict,
             config,
         } => run_gate(&GateArgs {
+            workers,
+            no_fork,
             base: &base,
             pytest_cmd: &pytest_cmd,
             cov,
@@ -346,6 +366,8 @@ enabled = true
 
 /// Everything `dupdup gate` was asked to do.
 struct GateArgs<'a> {
+    workers: usize,
+    no_fork: bool,
     base: &'a str,
     pytest_cmd: &'a str,
     cov: Vec<String>,
@@ -385,6 +407,7 @@ fn run_gate(args: &GateArgs) -> anyhow::Result<()> {
         budget: Duration::from_secs(args.budget_secs),
         max_existing: args.max_existing,
         timeout: Duration::from_secs(args.timeout_secs),
+        workers: if args.no_fork { 0 } else { args.workers },
     };
     let verdicts = gate::run(&opts, &touched)?;
     if args.json {
@@ -900,6 +923,7 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
 
 /// Everything `dupdup mutate` was asked to do.
 struct MutateOptions<'a> {
+    workers: usize,
     sources: &'a [PathBuf],
     coverage_json: Option<&'a Path>,
     from_mutmut: Option<&'a Path>,
@@ -929,6 +953,7 @@ fn run_mutate(opts: &MutateOptions) -> anyhow::Result<()> {
         cwd: None,
         deadline: None,
         narrow_candidates: None,
+        workers: opts.workers,
     };
     let resume = match (opts.resume, opts.out) {
         (true, Some(path)) if path.exists() => {

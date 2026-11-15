@@ -29,6 +29,13 @@ pub struct Mutant {
 }
 
 impl Mutant {
+    /// The edit this mutant makes: the byte range of the original source it
+    /// replaces, and the replacement text.
+    #[must_use]
+    pub fn edit(&self) -> (usize, usize, &str) {
+        (self.byte_start, self.byte_end, &self.replacement)
+    }
+
     /// Splices this mutant's replacement into `source`, which must be the
     /// exact text `find_mutants` was called with.
     #[must_use]
