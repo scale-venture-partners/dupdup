@@ -23,6 +23,28 @@ pub fn repo_root(start: &Path) -> Result<PathBuf> {
         .with_context(|| format!("{} has no working tree", start.display()))
 }
 
+/// The content of `file` (relative to the repo root) at `revision`, or `None`
+/// if the file doesn't exist there. `revision` is anything git resolves to a
+/// commit: a branch, a tag, `origin/main`, a SHA.
+///
+/// # Errors
+/// Returns an error if `repo_root` isn't a git repository or `revision`
+/// doesn't resolve.
+pub fn file_at(repo_root: &Path, revision: &str, file: &Path) -> Result<Option<String>> {
+    let repo = open_repo(repo_root)?;
+    let commit = repo
+        .rev_parse_single(revision)
+        .with_context(|| format!("`{revision}` is not a revision in this repository"))?
+        .object()?
+        .peel_to_commit()?;
+    let tree = commit.tree()?;
+    let Some(entry) = tree.lookup_entry_by_path(file)? else {
+        return Ok(None);
+    };
+    let blob = entry.object()?;
+    Ok(Some(String::from_utf8_lossy(&blob.data).into_owned()))
+}
+
 /// Files staged for commit (added/copied/modified), relative to repo root.
 ///
 /// # Errors
@@ -264,5 +286,31 @@ mod tests {
         let dir = init_repo();
         fs::write(dir.path().join("f.py"), "x = 1\n").unwrap();
         assert!(!is_clean(dir.path(), Path::new("f.py")).unwrap());
+    }
+
+    #[test]
+    fn file_at_reads_a_committed_version_not_the_working_tree() {
+        let dir = init_repo();
+        fs::write(dir.path().join("a.py"), "old = 1\n").unwrap();
+        run(dir.path(), &["add", "a.py"]);
+        run(dir.path(), &["commit", "-q", "-m", "one"]);
+        fs::write(dir.path().join("a.py"), "new = 2\n").unwrap();
+        assert_eq!(
+            file_at(dir.path(), "HEAD", Path::new("a.py")).unwrap(),
+            Some("old = 1\n".to_string())
+        );
+        assert_eq!(
+            file_at(dir.path(), "HEAD", Path::new("nope.py")).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn file_at_errors_on_an_unknown_revision() {
+        let dir = init_repo();
+        fs::write(dir.path().join("a.py"), "x = 1\n").unwrap();
+        run(dir.path(), &["add", "a.py"]);
+        run(dir.path(), &["commit", "-q", "-m", "one"]);
+        assert!(file_at(dir.path(), "no-such-branch", Path::new("a.py")).is_err());
     }
 }
