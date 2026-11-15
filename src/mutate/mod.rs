@@ -16,6 +16,9 @@ pub mod operators;
 /// Runs mutants by forking, through a bundled pytest plugin.
 mod forked;
 
+/// mutmut's mutation operators, used to generate mutants.
+pub mod mutmut_ops;
+
 /// Reads a mutmut run's mutants and attributes each kill to the tests that
 /// failed.
 pub mod mutmut;
@@ -28,6 +31,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+/// A function that generates the mutants of one source file, from its key (as
+/// spelled in the coverage report) and its text.
+pub type GenerateMutants =
+    std::sync::Arc<dyn Fn(&str, &str) -> anyhow::Result<Vec<Mutant>> + Send + Sync>;
 
 /// A function that narrows a mutant's candidate tests.
 pub type NarrowCandidates = std::sync::Arc<dyn Fn(Vec<String>) -> Vec<String> + Send + Sync>;
@@ -67,6 +75,9 @@ pub struct RunConfig {
     /// When above zero, mutants run by forking this many workers from one
     /// pytest process (see the `forked` module) instead of one process each.
     pub workers: usize,
+    /// Generates a source file's mutants (by file key and source text)
+    /// instead of the built-in operators.
+    pub generate: Option<GenerateMutants>,
 }
 
 pub(crate) enum Outcome {
@@ -362,7 +373,9 @@ pub fn collect(
 
         let original = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", source.display()))?;
-        let mutants = if cfg.extreme {
+        let mutants = if let Some(generate) = &cfg.generate {
+            generate(&key, &original)?
+        } else if cfg.extreme {
             find_extreme_mutants(&key, &original)?
         } else {
             find_mutants(&key, &original)?

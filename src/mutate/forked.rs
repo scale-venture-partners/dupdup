@@ -234,6 +234,9 @@ fn run_chunk(
                 tally.survived += 1;
                 credit(kills, &r.evaluated, &[], &r.id);
             }
+            // A mutation in a class body can't be applied by swapping function
+            // code; it was never run, so it counts with the uncovered ones.
+            "not_applicable" => tally.no_coverage += 1,
             other => {
                 tally.inconclusive += 1;
                 eprintln!(

@@ -266,6 +266,19 @@ impl LineCoverage {
         files
     }
 
+    /// The lines of `file` some test covered, sorted.
+    #[must_use]
+    pub fn covered_lines(&self, file: &str) -> Vec<usize> {
+        let mut lines: Vec<usize> = self
+            .by_line
+            .keys()
+            .filter(|(f, _)| f == file)
+            .map(|(_, l)| *l)
+            .collect();
+        lines.sort_unstable();
+        lines
+    }
+
     /// Whether `file` appears in the coverage report at all. A mutation
     /// target that isn't found here is a path-spelling mismatch between
     /// `--source` and the coverage report, not "this file has no coverage"
