@@ -141,6 +141,8 @@ pub struct GateOptions<'a> {
     pub max_existing: usize,
     /// Per-invocation pytest timeout.
     pub timeout: Duration,
+    /// Fork this many workers per pytest process (0: one process per mutant).
+    pub workers: usize,
 }
 
 /// A scratch directory under the system temp dir, removed on drop.
@@ -260,6 +262,7 @@ pub fn run(opts: &GateOptions, touched: &[TouchedTest]) -> anyhow::Result<Vec<Te
             cwd: Some(opts.root.to_path_buf()),
             deadline: Some(started + opts.budget),
             narrow_candidates: Some(narrow.clone()),
+            workers: opts.workers,
         };
         let part = mutate::collect(opts.root, &sources, &gate_cov, &cfg, None, &mut |_| Ok(()))?;
         merge(&mut matrix, part);

@@ -13,6 +13,9 @@
 /// Mutant generation: the tree-sitter walk and the fixed operator table.
 pub mod operators;
 
+/// Runs mutants by forking, through a bundled pytest plugin.
+mod forked;
+
 /// Reads a mutmut run's mutants and attributes each kill to the tests that
 /// failed.
 pub mod mutmut;
@@ -61,6 +64,9 @@ pub struct RunConfig {
     /// Narrows a mutant's candidate tests before they are run, e.g. to cap an
     /// otherwise huge set. Applied to every mutant's candidates.
     pub narrow_candidates: Option<NarrowCandidates>,
+    /// When above zero, mutants run by forking this many workers from one
+    /// pytest process (see the `forked` module) instead of one process each.
+    pub workers: usize,
 }
 
 pub(crate) enum Outcome {
@@ -370,6 +376,18 @@ pub fn collect(
             original,
             mutants,
         });
+    }
+
+    if cfg.workers > 0 {
+        let tally = forked::collect_prepared(&prepared, coverage, cfg, &mut kills, progress)?;
+        if tally.budget_hit {
+            eprintln!("time budget reached: the remaining mutants were not run");
+        }
+        eprintln!(
+            "{} killed, {} survived, {} with no coverage, {} inconclusive",
+            tally.killed, tally.survived, tally.no_coverage, tally.inconclusive
+        );
+        return Ok(kills);
     }
 
     let all_candidates: Vec<String> = all_candidates.into_iter().collect();

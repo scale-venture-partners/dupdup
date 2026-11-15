@@ -86,6 +86,34 @@ included, differs from the base once whitespace and comments are ignored.
 It reads the base through `gix`, with no `git` binary, and takes about a
 second on a ~5k-test suite. `--json` adds new/changed.
 
+`dupdup gate --base origin/main --cov mypkg --pytest-cmd ".venv/bin/python -m pytest -q"`
+checks the tests a change adds or edits: does each catch anything the suite
+doesn't already catch? It runs only those tests under coverage, mutates only
+the functions they cover (function-level and statement-level mutants), and
+runs each mutant against them plus up to `--max-existing` existing tests
+(found from `--baseline-coverage`, the default branch's per-test coverage
+JSON; without it a test can be shown to kill nothing but not to duplicate
+another). Each touched test is `UNIQUE` (kills a mutant no existing test
+kills), `OVERLAP` (kills only what a named existing test also kills),
+`KILLS_NOTHING`, or `NO_EVIDENCE`; `--strict` exits 1 on `KILLS_NOTHING`.
+`--budget-secs` stops starting new mutants after that long.
+
+Mutants run by forking: one pytest process imports and collects once, then
+forks `--workers` (default 4) workers, each swapping a mutant's changed
+function code into the live module, running the candidate tests and
+reporting which failed (`--no-fork` goes back to one process per mutant).
+On a ~5k-test suite whose test startup takes 10 to 15 s, a gate over 3 new
+tests evaluating 30 mutants took about 34 s end to end; one process per
+mutant took two minutes for 8. The plugin needs Python 3.11+ and fork. A
+mutant that changes a function it cannot find in the live module (a class
+defined inside a function, say) is reported inconclusive.
+
+The built-in mutants are still sparse for some modules, so a hollow test and
+a real edge case in the same function can both come out `OVERLAP`; mutmut's
+operators on just the covered functions would sharpen that. Treat the
+verdicts as review hints, not a merge gate. `mutate --workers N` uses the
+same fork runner for the whole-file collector.
+
 ### Running it on every PR
 
 `dupdup check --all` over a ~5k-test suite takes about two seconds, so it
