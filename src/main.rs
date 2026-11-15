@@ -116,12 +116,23 @@ enum Commands {
         /// Spelled exactly as they appear as keys in --coverage-json's own
         /// "files" map, and run from the same working directory that
         /// coverage run used.
-        #[arg(required = true)]
+        #[arg(required_unless_present = "from_mutmut")]
         sources: Vec<PathBuf>,
         /// Output of `coverage json --show-contexts` from the run whose
         /// tests should be considered as candidates.
-        #[arg(long)]
-        coverage_json: PathBuf,
+        #[arg(long, required_unless_present = "from_mutmut")]
+        coverage_json: Option<PathBuf>,
+        /// Attribute kills for the mutants mutmut 3 already generated in this
+        /// project directory (its `mutants/` folder, after `mutmut run`),
+        /// instead of generating mutants. Each mutant is selected with
+        /// MUTANT_UNDER_TEST and run against the tests mutmut says cover its
+        /// function, so dupdup needs no mutation operators of its own and no
+        /// coverage report. --pytest-cmd runs inside that `mutants/` folder.
+        #[arg(long, conflicts_with_all = ["sources", "coverage_json", "extreme"])]
+        from_mutmut: Option<PathBuf>,
+        /// With --from-mutmut, how many mutants to run at once.
+        #[arg(long, default_value_t = 4, requires = "from_mutmut")]
+        jobs: usize,
         /// Base command to invoke pytest with; one or more node ids are
         /// appended per invocation. No flags of dupdup's own are added.
         /// Split on whitespace with no quoting — a path or argument with a
@@ -202,9 +213,13 @@ fn main() -> anyhow::Result<()> {
             out,
             resume,
             max_drilldown,
+            from_mutmut,
+            jobs,
         } => run_mutate(&MutateOptions {
             sources: &sources,
-            coverage_json: &coverage_json,
+            coverage_json: coverage_json.as_deref(),
+            from_mutmut: from_mutmut.as_deref(),
+            jobs,
             pytest_cmd: &pytest_cmd,
             timeout_secs,
             extreme,
@@ -665,7 +680,9 @@ fn run_analyze(opts: &AnalyzeOptions) -> anyhow::Result<()> {
 /// Everything `dupdup mutate` was asked to do.
 struct MutateOptions<'a> {
     sources: &'a [PathBuf],
-    coverage_json: &'a Path,
+    coverage_json: Option<&'a Path>,
+    from_mutmut: Option<&'a Path>,
+    jobs: usize,
     pytest_cmd: &'a str,
     timeout_secs: u64,
     extreme: bool,
@@ -682,14 +699,13 @@ fn run_mutate(opts: &MutateOptions) -> anyhow::Result<()> {
         .collect();
     anyhow::ensure!(!pytest_cmd.is_empty(), "--pytest-cmd must not be empty");
 
-    let cwd = std::env::current_dir()?;
-    let repo_root = git::repo_root(&cwd)?;
-    let coverage = dynamic::coverage::load_line_coverage(opts.coverage_json)?;
     let cfg = mutate::RunConfig {
         pytest_cmd,
         timeout: Duration::from_secs(opts.timeout_secs),
         extreme: opts.extreme,
         max_drilldown: opts.max_drilldown,
+        env: Vec::new(),
+        cwd: None,
     };
     let resume = match (opts.resume, opts.out) {
         (true, Some(path)) if path.exists() => {
@@ -703,14 +719,25 @@ fn run_mutate(opts: &MutateOptions) -> anyhow::Result<()> {
             None => Ok(()),
         }
     };
-    let matrix = mutate::collect(
-        &repo_root,
-        opts.sources,
-        &coverage,
-        &cfg,
-        resume,
-        &mut progress,
-    )?;
+    let matrix = if let Some(root) = opts.from_mutmut {
+        let run = mutate::mutmut::load(root)?;
+        mutate::mutmut::collect(root, &run, &cfg, opts.jobs, resume, &mut progress)?
+    } else {
+        let coverage_json = opts
+            .coverage_json
+            .ok_or_else(|| anyhow::anyhow!("--coverage-json is required without --from-mutmut"))?;
+        let cwd = std::env::current_dir()?;
+        let repo_root = git::repo_root(&cwd)?;
+        let coverage = dynamic::coverage::load_line_coverage(coverage_json)?;
+        mutate::collect(
+            &repo_root,
+            opts.sources,
+            &coverage,
+            &cfg,
+            resume,
+            &mut progress,
+        )?
+    };
     if opts.out.is_none() {
         output::print_kill_matrix_json(&matrix)?;
     }
