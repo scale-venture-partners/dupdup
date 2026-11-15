@@ -52,6 +52,12 @@ pub struct RunConfig {
     pub env: Vec<(String, String)>,
     /// Working directory for every pytest invocation, when not the current one.
     pub cwd: Option<PathBuf>,
+    /// Stop starting new mutants after this instant; what was evaluated is
+    /// kept and the rest are reported as skipped.
+    pub deadline: Option<Instant>,
+    /// Narrows a mutant's candidate tests before they are run, e.g. to cap an
+    /// otherwise huge set. Applied to every mutant's candidates.
+    pub narrow_candidates: Option<std::sync::Arc<dyn Fn(Vec<String>) -> Vec<String> + Send + Sync>>,
 }
 
 pub(crate) enum Outcome {
@@ -368,6 +374,7 @@ pub fn collect(
 
     let (mut killed, mut survived, mut no_coverage, mut inconclusive) =
         (0usize, 0usize, 0usize, 0usize);
+    let mut budget_hit = false;
 
     for source in &prepared {
         if source.mutants.is_empty() {
@@ -391,7 +398,15 @@ pub fn collect(
         };
 
         for mutant in &source.mutants {
-            let candidates = coverage.tests_covering(&source.key, mutant.candidate_lines.clone());
+            if cfg.deadline.is_some_and(|d| Instant::now() > d) {
+                budget_hit = true;
+                break;
+            }
+            let mut candidates =
+                coverage.tests_covering(&source.key, mutant.candidate_lines.clone());
+            if let Some(narrow) = &cfg.narrow_candidates {
+                candidates = narrow(candidates);
+            }
             std::fs::write(&source.path, mutant.apply(&source.original))
                 .with_context(|| format!("failed to write mutant to {}", source.path.display()))?;
             let outcome = run_mutant(cfg, &candidates);
@@ -432,6 +447,9 @@ pub fn collect(
         progress(&kills)?;
     }
 
+    if budget_hit {
+        eprintln!("time budget reached: the remaining mutants were not run");
+    }
     eprintln!(
         "{killed} killed, {survived} survived, {no_coverage} with no coverage, \
          {inconclusive} inconclusive"

@@ -20,3 +20,6 @@ pub mod static_lint;
 
 /// The tests a change adds or edits, found against a base revision.
 pub mod changed;
+
+/// A diff-scoped check of whether a PR's new tests catch anything the suite doesn't.
+pub mod gate;
