@@ -26,3 +26,6 @@ pub mod changed;
 
 /// A diff-scoped check of whether a PR's new tests catch anything the suite doesn't.
 pub mod gate;
+
+/// Where a suite's time goes, from a JUnit report.
+pub mod slowest;

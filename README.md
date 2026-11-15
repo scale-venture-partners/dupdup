@@ -121,6 +121,11 @@ hollow one came out `OVERLAP` and a real edge case `UNIQUE`. Treat the
 verdicts as review hints, not a merge gate. `mutate --workers N` uses the
 same fork runner for the whole-file collector.
 
+`dupdup slowest --junit-xml junit.xml` shows where the time goes: the slowest
+tests with their share, how few tests make up half the suite's time, and the
+slowest modules. Redundant tests are rarely the slow ones (see the runtime
+summary under `analyze`), so this is the place to look when the aim is speed.
+
 ### Running it on every PR
 
 `dupdup check --all` over a ~5k-test suite takes about two seconds, so it
