@@ -29,6 +29,25 @@ pub struct Mutant {
 }
 
 impl Mutant {
+    /// A mutant made elsewhere (by mutmut's operators, say) from its edit: the
+    /// byte range of the original source it replaces and the replacement.
+    #[must_use]
+    pub fn from_edit(
+        id: String,
+        candidate_lines: RangeInclusive<usize>,
+        byte_start: usize,
+        byte_end: usize,
+        replacement: String,
+    ) -> Self {
+        Self {
+            id,
+            candidate_lines,
+            byte_start,
+            byte_end,
+            replacement,
+        }
+    }
+
     /// The edit this mutant makes: the byte range of the original source it
     /// replaces, and the replacement text.
     #[must_use]

@@ -8,6 +8,14 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// The `--operators` choices for `gate`.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum OperatorsArg {
+    Auto,
+    Builtin,
+    Mutmut,
+}
+
 #[derive(Parser)]
 #[command(
     name = "dupdup",
@@ -225,6 +233,11 @@ enum Commands {
         /// Per-invocation pytest timeout, in seconds
         #[arg(long, default_value_t = 30)]
         timeout_secs: u64,
+        /// Statement-level mutants: mutmut's operators (needs mutmut importable
+        /// in the --pytest-cmd interpreter), dupdup's built-in ones, or auto
+        /// (mutmut's if available)
+        #[arg(long, value_enum, default_value_t = OperatorsArg::Auto)]
+        operators: OperatorsArg,
         /// Fork this many mutant workers per pytest process (needs Python
         /// 3.11+ and fork)
         #[arg(long, default_value_t = 4)]
@@ -327,12 +340,14 @@ fn main() -> anyhow::Result<()> {
             budget_secs,
             max_existing,
             timeout_secs,
+            operators,
             workers,
             no_fork,
             json,
             strict,
             config,
         } => run_gate(&GateArgs {
+            operators,
             workers,
             no_fork,
             base: &base,
@@ -366,6 +381,7 @@ enabled = true
 
 /// Everything `dupdup gate` was asked to do.
 struct GateArgs<'a> {
+    operators: OperatorsArg,
     workers: usize,
     no_fork: bool,
     base: &'a str,
@@ -408,6 +424,11 @@ fn run_gate(args: &GateArgs) -> anyhow::Result<()> {
         max_existing: args.max_existing,
         timeout: Duration::from_secs(args.timeout_secs),
         workers: if args.no_fork { 0 } else { args.workers },
+        operators: match args.operators {
+            OperatorsArg::Auto => gate::Operators::Auto,
+            OperatorsArg::Builtin => gate::Operators::Builtin,
+            OperatorsArg::Mutmut => gate::Operators::Mutmut,
+        },
     };
     let verdicts = gate::run(&opts, &touched)?;
     if args.json {
@@ -954,6 +975,7 @@ fn run_mutate(opts: &MutateOptions) -> anyhow::Result<()> {
         deadline: None,
         narrow_candidates: None,
         workers: opts.workers,
+        generate: None,
     };
     let resume = match (opts.resume, opts.out) {
         (true, Some(path)) if path.exists() => {

@@ -36,8 +36,8 @@ def _code_by_qualname(code, out):
     return out
 
 
-def _live_function(file, qualname):
-    """The function object for ``qualname`` defined in ``file``, or None."""
+def _resolve(file, qualname):
+    """The live object for ``qualname`` defined in ``file``, or None."""
     module = None
     for mod in list(sys.modules.values()):
         path = getattr(mod, "__file__", None)
@@ -55,6 +55,12 @@ def _live_function(file, qualname):
         obj = raw if raw is not None else getattr(obj, part, None)
         if obj is None:
             return None
+    return obj
+
+
+def _live_function(file, qualname):
+    """The function object for ``qualname`` defined in ``file``, or None."""
+    obj = _resolve(file, qualname)
     for attr in ("__func__", "fget"):
         obj = getattr(obj, attr, obj)
     while hasattr(obj, "__wrapped__"):
@@ -83,12 +89,17 @@ def _apply(job):
     for qualname in changed:
         fn = _live_function(file, qualname)
         if fn is None:
+            if isinstance(_resolve(file, qualname), type):
+                return NOT_APPLICABLE + ": the mutation is in a class body, not a function"
             return f"could not find {qualname} in the live module"
         new = mutated_codes[qualname]
         if len(new.co_freevars) != len(fn.__code__.co_freevars):
             return f"{qualname} closes over a different set of variables"
         fn.__code__ = new
     return None
+
+
+NOT_APPLICABLE = "not applicable"
 
 
 class _Timeout(Exception):
@@ -99,7 +110,8 @@ def _run_job(job, items_by_id, timeout):
     """Runs in the forked child. Returns the result dict."""
     reason = _apply(job)
     if reason:
-        return {"id": job["id"], "outcome": "unpatchable", "reason": reason, "killers": [], "evaluated": []}
+        outcome = "not_applicable" if reason.startswith(NOT_APPLICABLE) else "unpatchable"
+        return {"id": job["id"], "outcome": outcome, "reason": reason, "killers": [], "evaluated": []}
 
     from _pytest.runner import runtestprotocol
 

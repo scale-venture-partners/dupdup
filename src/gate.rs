@@ -11,7 +11,7 @@
 
 use crate::changed::{Status, TouchedTest};
 use crate::dynamic::coverage::{load_line_coverage, LineCoverage};
-use crate::mutate::{self, KillMatrix, RunConfig};
+use crate::mutate::{self, mutmut_ops, KillMatrix, RunConfig};
 use crate::redundancy::base_test_name;
 use anyhow::Context;
 use serde::Serialize;
@@ -123,6 +123,18 @@ pub fn classify(touched: &[TouchedTest], matrix: &KillMatrix) -> Vec<TestVerdict
         .collect()
 }
 
+/// Which statement-level mutants the gate uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operators {
+    /// mutmut's if it can be imported in the project's Python, else the
+    /// built-in ones.
+    Auto,
+    /// dupdup's own small operator set.
+    Builtin,
+    /// mutmut's operators (an error if mutmut can't be imported).
+    Mutmut,
+}
+
 /// How to run the gate.
 pub struct GateOptions<'a> {
     /// The repository root.
@@ -143,6 +155,8 @@ pub struct GateOptions<'a> {
     pub timeout: Duration,
     /// Fork this many workers per pytest process (0: one process per mutant).
     pub workers: usize,
+    /// Which statement-level mutants to use.
+    pub operators: Operators,
 }
 
 /// A scratch directory under the system temp dir, removed on drop.
@@ -242,6 +256,47 @@ pub fn run(opts: &GateOptions, touched: &[TouchedTest]) -> anyhow::Result<Vec<Te
         .collect();
     // Function-level mutants show a test depends on a function; statement-level
     // ones show what it checks inside it. Both, within one shared budget.
+    let use_mutmut = match opts.operators {
+        Operators::Builtin => false,
+        Operators::Mutmut => {
+            anyhow::ensure!(
+                mutmut_ops::available(&opts.pytest_cmd[..1]),
+                "--operators mutmut needs mutmut and libcst importable in {python}"
+            );
+            true
+        }
+        Operators::Auto => mutmut_ops::available(&opts.pytest_cmd[..1]),
+    };
+    eprintln!(
+        "statement-level mutants: {}",
+        if use_mutmut {
+            "mutmut's operators"
+        } else {
+            "built-in operators"
+        }
+    );
+    let generate: Option<mutate::GenerateMutants> = if use_mutmut {
+        let interpreter = vec![python.clone()];
+        let root = opts.root.to_path_buf();
+        let covered: HashMap<String, Vec<usize>> = sources
+            .iter()
+            .map(|s| {
+                let key = s.to_string_lossy().into_owned();
+                let lines = gate_cov.covered_lines(&key);
+                (key, lines)
+            })
+            .collect();
+        Some(std::sync::Arc::new(move |key: &str, _source: &str| {
+            let path = root.join(key);
+            mutmut_ops::mutants_for(
+                &interpreter,
+                &path.to_string_lossy(),
+                covered.get(key).map(Vec::as_slice),
+            )
+        }))
+    } else {
+        None
+    };
     let mut matrix = KillMatrix::default();
     let touched_for_cap: HashSet<String> = ids.iter().map(|s| (*s).to_string()).collect();
     let max_existing = opts.max_existing;
@@ -263,6 +318,8 @@ pub fn run(opts: &GateOptions, touched: &[TouchedTest]) -> anyhow::Result<Vec<Te
             deadline: Some(started + opts.budget),
             narrow_candidates: Some(narrow.clone()),
             workers: opts.workers,
+            // The function-level pass uses the built-in extreme mutants.
+            generate: if extreme { None } else { generate.clone() },
         };
         let part = mutate::collect(opts.root, &sources, &gate_cov, &cfg, None, &mut |_| Ok(()))?;
         merge(&mut matrix, part);

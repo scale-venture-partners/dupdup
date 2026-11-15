@@ -108,9 +108,16 @@ mutant took two minutes for 8. The plugin needs Python 3.11+ and fork. A
 mutant that changes a function it cannot find in the live module (a class
 defined inside a function, say) is reported inconclusive.
 
-The built-in mutants are still sparse for some modules, so a hollow test and
-a real edge case in the same function can both come out `OVERLAP`; mutmut's
-operators on just the covered functions would sharpen that. Treat the
+Statement-level mutants come from mutmut's operators when mutmut and libcst
+are importable in the `--pytest-cmd` interpreter (`--operators auto`, the
+default; `mutmut` insists on it, `builtin` uses dupdup's small set). A bundled
+helper calls mutmut as a library for just the covered lines and returns each
+mutant as an exact byte-range edit, so there is no `mutants/` copy and no
+mutmut run. A mutation inside a class body (a dataclass default, say) can't
+be applied by swapping function code and is counted with the uncovered ones.
+On the trial below the built-in operators found about 8 mutants in the
+module under test and mutmut's found 129; with them the duplicate test and a
+hollow one came out `OVERLAP` and a real edge case `UNIQUE`. Treat the
 verdicts as review hints, not a merge gate. `mutate --workers N` uses the
 same fork runner for the whole-file collector.
 
