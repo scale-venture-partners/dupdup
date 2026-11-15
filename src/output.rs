@@ -63,6 +63,9 @@ pub struct AnalyzeReport {
     pub findings: Vec<RedundancyFinding>,
     /// How many tests the analysis ran over, for the flagged-ratio summary.
     pub tests_analyzed: usize,
+    /// How much of the suite's time the flagged tests take, when a JUnit
+    /// report gave times.
+    pub runtime: Option<crate::redundancy::Runtime>,
 }
 
 /// A flagged fraction above this means the coverage signal isn't telling the
@@ -81,6 +84,33 @@ fn is_relation(kind: RedundancyKind) -> bool {
 }
 
 impl AnalyzeReport {
+    /// "time: the flagged tests take X s of Y s (P%)", plus what the removal set
+    /// would take, when the findings carry times.
+    #[must_use]
+    pub fn runtime_summary(&self) -> Option<String> {
+        let rt = self.runtime?;
+        if rt.total_seconds <= 0.0 {
+            return None;
+        }
+        let mut line = format!(
+            "{}: flagged tests take {:.1}s of {:.1}s ({:.0}%), an upper bound on the time acting on every finding would save",
+            self.source,
+            rt.flagged_seconds,
+            rt.total_seconds,
+            100.0 * rt.flagged_seconds / rt.total_seconds
+        );
+        let removable: f64 = self
+            .findings
+            .iter()
+            .filter(|f| f.kind == RedundancyKind::Removable)
+            .filter_map(|f| f.seconds)
+            .sum();
+        if removable > 0.0 {
+            line.push_str(&format!("; the removal set takes {removable:.1}s"));
+        }
+        Some(line)
+    }
+
     /// How many distinct tests carry a redundancy-relation finding.
     #[must_use]
     pub fn flagged_tests(&self) -> usize {
@@ -134,6 +164,9 @@ pub fn print_analyze_human(reports: &[AnalyzeReport]) {
             if let Some(n) = f.evaluated {
                 more.push_str(&format!(" (0 of {n} mutants killed)"));
             }
+            if let Some(s) = f.seconds {
+                more.push_str(&format!(" ({s:.2}s)"));
+            }
             if f.related.is_empty() {
                 println!("{}  {}", kind_label(f.kind), f.test_id);
             } else {
@@ -153,6 +186,9 @@ pub fn print_analyze_human(reports: &[AnalyzeReport]) {
         if let Some(line) = report.flagged_summary() {
             println!("{line}");
         }
+        if let Some(line) = report.runtime_summary() {
+            println!("{line}");
+        }
     }
 }
 
@@ -164,6 +200,8 @@ struct JsonFinding<'a> {
     related: &'a [String],
     other_matches: usize,
     evaluated: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seconds: Option<f64>,
 }
 
 /// Prints every report's findings as one flat JSON array, each entry tagged
@@ -182,6 +220,7 @@ pub fn print_analyze_json(reports: &[AnalyzeReport]) -> anyhow::Result<()> {
                 related: &f.related,
                 other_matches: f.other_matches,
                 evaluated: f.evaluated,
+                seconds: f.seconds,
             })
         })
         .collect();
@@ -228,9 +267,11 @@ mod tests {
                     related: vec![],
                     other_matches: 0,
                     evaluated: None,
+                    seconds: None,
                 })
                 .collect(),
             tests_analyzed: analyzed,
+            runtime: None,
         }
     }
 
@@ -261,6 +302,7 @@ mod tests {
             related: vec![],
             other_matches: 0,
             evaluated: None,
+            seconds: None,
         });
         assert_eq!(r.flagged_tests(), 0);
     }
@@ -274,6 +316,7 @@ mod tests {
             related: vec![],
             other_matches: 0,
             evaluated: Some(7),
+            seconds: None,
         });
         let json = {
             let flat = serde_json::to_string(

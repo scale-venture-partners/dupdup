@@ -67,6 +67,9 @@ pub struct RedundancyFinding {
     /// many mutants this test was run against. Without it, "killed none"
     /// could mean 1 mutant or 100.
     pub evaluated: Option<usize>,
+    /// Seconds the flagged test(s) take, when a JUnit report says: the test's
+    /// own time, or for a duplicate group the time of the tests that would go.
+    pub seconds: Option<f64>,
 }
 
 /// Pytest's parametrize suffix (`test_foo[1-2]`). Siblings in the same
@@ -180,6 +183,7 @@ pub fn analyze_scoped(
                 related: Vec::new(),
                 other_matches: 0,
                 evaluated: None,
+                seconds: None,
             });
         }
     }
@@ -219,6 +223,7 @@ pub fn analyze_scoped(
                     related: twins.iter().map(|&j| tests[j].test_id.clone()).collect(),
                     other_matches: 0,
                     evaluated: None,
+                    seconds: None,
                 });
             }
         }
@@ -230,6 +235,7 @@ pub fn analyze_scoped(
                 related: vec![tests[k].test_id.clone()],
                 other_matches: supersets - 1,
                 evaluated: None,
+                seconds: None,
             });
         }
     }
@@ -248,6 +254,7 @@ pub fn analyze_scoped(
                 related: cover.iter().map(|&j| tests[j].test_id.clone()).collect(),
                 other_matches: 0,
                 evaluated: None,
+                seconds: None,
             });
         }
     }
@@ -308,6 +315,71 @@ fn small_cover(tests: &[TestCoverage], target: usize, peers: &[usize]) -> Option
         chosen.push(best.1);
     }
     Some(chosen)
+}
+
+/// How much of a suite's time its flagged tests account for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Runtime {
+    /// Seconds the distinct tests behind a relation finding take: each
+    /// flagged test, and for a duplicate group the tests that would go.
+    pub flagged_seconds: f64,
+    /// Seconds the whole suite takes, from the JUnit report.
+    pub total_seconds: f64,
+}
+
+/// Attaches each finding's `seconds` from `seconds_by_key` (`to_key` maps a
+/// test id to the key the map uses; `NoCoverage` ids already are keys),
+/// sorts the findings by time, slowest first, and totals the time. A test's
+/// time is counted once however many findings name it, so
+/// `flagged_seconds` is an upper bound on what acting on every finding
+/// would save, not a promise.
+pub fn attach_runtime(
+    findings: &mut [RedundancyFinding],
+    seconds_by_key: &std::collections::HashMap<String, f64>,
+    to_key: &dyn Fn(&str) -> String,
+) -> Runtime {
+    let seconds_of = |id: &str, is_key: bool| {
+        let key = if is_key { id.to_string() } else { to_key(id) };
+        seconds_by_key.get(&key).copied()
+    };
+    let mut counted: HashSet<String> = HashSet::new();
+    let mut flagged = 0.0;
+    for f in findings.iter_mut() {
+        let is_key = f.kind == RedundancyKind::NoCoverage;
+        let members: Vec<&str> = if f.kind == RedundancyKind::DuplicateCoverage {
+            f.related.iter().map(String::as_str).collect()
+        } else {
+            vec![f.test_id.as_str()]
+        };
+        let times: Vec<Option<f64>> = members.iter().map(|m| seconds_of(m, is_key)).collect();
+        f.seconds = times
+            .iter()
+            .any(Option::is_some)
+            .then(|| times.iter().flatten().sum());
+        let is_relation = !matches!(
+            f.kind,
+            RedundancyKind::NoCoverage | RedundancyKind::Removable
+        );
+        if is_relation {
+            for (m, s) in members.iter().zip(&times) {
+                if let Some(s) = s {
+                    if counted.insert((*m).to_string()) {
+                        flagged += s;
+                    }
+                }
+            }
+        }
+    }
+    findings.sort_by(|a, b| {
+        b.seconds
+            .unwrap_or(-1.0)
+            .partial_cmp(&a.seconds.unwrap_or(-1.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Runtime {
+        flagged_seconds: flagged,
+        total_seconds: seconds_by_key.values().sum(),
+    }
 }
 
 /// A jointly coverage-preserving set of tests that can all be removed at once:
@@ -780,5 +852,65 @@ mod tests {
         let tests = vec![tc("a.py::test_x", &[1]), tc("b.py::test_y", &[1])];
         assert!(removable_set_scoped(&tests, Scope::SameFile).is_empty());
         assert_eq!(removable_set_scoped(&tests, Scope::Anywhere).len(), 1);
+    }
+
+    fn finding(kind: RedundancyKind, id: &str, related: &[&str]) -> RedundancyFinding {
+        RedundancyFinding {
+            kind,
+            test_id: id.into(),
+            related: related.iter().map(|s| (*s).to_string()).collect(),
+            other_matches: 0,
+            evaluated: None,
+            seconds: None,
+        }
+    }
+
+    #[test]
+    fn findings_get_their_runtime_and_are_sorted_slowest_first() {
+        let times: std::collections::HashMap<String, f64> = [
+            ("f::a".to_string(), 0.5),
+            ("f::b".to_string(), 3.0),
+            ("f::c".to_string(), 1.0),
+            ("f::d".to_string(), 10.0),
+        ]
+        .into_iter()
+        .collect();
+        let mut findings = vec![
+            finding(RedundancyKind::SubsumedCoverage, "f.py::a", &["f.py::z"]),
+            finding(
+                RedundancyKind::DuplicateCoverage,
+                "f.py::keep",
+                &["f.py::b", "f.py::c"],
+            ),
+        ];
+        let to_key = |id: &str| id.replace(".py::", "::");
+        let rt = attach_runtime(&mut findings, &times, &to_key);
+        assert_eq!(findings[0].test_id, "f.py::keep");
+        assert_eq!(findings[0].seconds, Some(4.0));
+        assert_eq!(findings[1].seconds, Some(0.5));
+        assert_eq!(rt.flagged_seconds, 4.5);
+        assert_eq!(rt.total_seconds, 14.5);
+    }
+
+    #[test]
+    fn a_test_named_by_two_findings_is_counted_once() {
+        let times: std::collections::HashMap<String, f64> =
+            [("f::a".to_string(), 2.0)].into_iter().collect();
+        let mut findings = vec![
+            finding(RedundancyKind::SubsumedCoverage, "f.py::a", &["f.py::x"]),
+            finding(RedundancyKind::ContributesNothingUnique, "f.py::a", &[]),
+        ];
+        let rt = attach_runtime(&mut findings, &times, &|id| id.replace(".py::", "::"));
+        assert_eq!(rt.flagged_seconds, 2.0);
+    }
+
+    #[test]
+    fn a_test_the_report_does_not_time_has_no_seconds() {
+        let mut findings = vec![finding(RedundancyKind::CoversNothing, "f.py::a", &[])];
+        let rt = attach_runtime(&mut findings, &std::collections::HashMap::new(), &|id| {
+            id.into()
+        });
+        assert_eq!(findings[0].seconds, None);
+        assert_eq!(rt.flagged_seconds, 0.0);
     }
 }
