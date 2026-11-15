@@ -54,6 +54,10 @@ enum Commands {
         /// exit 0.
         #[arg(long)]
         write_baseline: Option<PathBuf>,
+        /// After the violations, print a merged `parametrize` for each
+        /// CLONE_TEST group, ready to paste (text output only).
+        #[arg(long, conflicts_with = "json")]
+        suggest: bool,
     },
     /// Redundancy analysis over a coverage run and/or a mutation kill-matrix.
     /// Requires executing the test suite first — this is not a linter.
@@ -270,15 +274,17 @@ fn main() -> anyhow::Result<()> {
             config,
             baseline,
             write_baseline,
-        } => run_check(
-            &paths,
+            suggest,
+        } => run_check(&CheckOptions {
+            paths: &paths,
             staged,
             all,
             json,
-            &config,
-            baseline.as_deref(),
-            write_baseline.as_deref(),
-        ),
+            config: &config,
+            baseline: baseline.as_deref(),
+            write_baseline: write_baseline.as_deref(),
+            suggest,
+        }),
         Commands::Analyze {
             coverage_json,
             coverage_data,
@@ -535,15 +541,29 @@ fn is_excluded(path: &Path, patterns: &[Regex]) -> bool {
     patterns.iter().any(|re| re.is_match(&path_str))
 }
 
-fn run_check(
-    paths: &[PathBuf],
+/// Everything `dupdup check` was asked to do.
+struct CheckOptions<'a> {
+    paths: &'a [PathBuf],
     staged: bool,
     all: bool,
     json: bool,
-    config_path: &Path,
-    baseline_path: Option<&Path>,
-    write_baseline_path: Option<&Path>,
-) -> anyhow::Result<()> {
+    config: &'a Path,
+    baseline: Option<&'a Path>,
+    write_baseline: Option<&'a Path>,
+    suggest: bool,
+}
+
+fn run_check(opts: &CheckOptions) -> anyhow::Result<()> {
+    let CheckOptions {
+        paths,
+        staged,
+        all,
+        json,
+        config: config_path,
+        baseline: baseline_path,
+        write_baseline: write_baseline_path,
+        suggest,
+    } = *opts;
     let modes = [!paths.is_empty(), staged, all]
         .iter()
         .filter(|b| **b)
@@ -558,6 +578,7 @@ fn run_check(
     let config = Config::load(config_path)?;
     let exclude_patterns = compile_globs(&config.exclude)?;
     let mut violations = Vec::new();
+    let mut suggestions: Vec<(String, static_lint::clones::Suggestion)> = Vec::new();
 
     if paths.is_empty() {
         let cwd = std::env::current_dir()?;
@@ -583,12 +604,17 @@ fn run_check(
                     Err(_) => continue,
                 }
             };
+            let file = rel_path.to_string_lossy().into_owned();
             violations.extend(static_lint::check_file_with_helpers(
-                &rel_path.to_string_lossy(),
-                &source,
-                &config,
-                &helpers,
+                &file, &source, &config, &helpers,
             )?);
+            if suggest {
+                suggestions.extend(
+                    static_lint::clones::suggestions(&source)?
+                        .into_iter()
+                        .map(|s| (file.clone(), s)),
+                );
+            }
         }
     } else {
         // An explicit path is checked regardless of pytest's test-file naming
@@ -606,12 +632,17 @@ fn run_check(
             &config.no_assertions.helpers,
         );
         for (path, source) in &sources {
+            let file = path.to_string_lossy().into_owned();
             violations.extend(static_lint::check_file_with_helpers(
-                &path.to_string_lossy(),
-                source,
-                &config,
-                &helpers,
+                &file, source, &config, &helpers,
             )?);
+            if suggest {
+                suggestions.extend(
+                    static_lint::clones::suggestions(source)?
+                        .into_iter()
+                        .map(|s| (file.clone(), s)),
+                );
+            }
         }
     }
 
@@ -641,6 +672,17 @@ fn run_check(
         output::print_check_json(&violations)?;
     } else {
         output::print_check_human(&violations);
+        // Only for groups still reported (not suppressed, not in the baseline).
+        for (file, s) in &suggestions {
+            if violations
+                .iter()
+                .any(|v| v.rule == "CLONE_TEST" && v.file == *file && v.line == s.line)
+            {
+                println!();
+                println!("suggestion for {file}:{}:", s.line);
+                println!("{}", s.text);
+            }
+        }
     }
 
     if violations.iter().any(|v| v.severity == Severity::Error) {

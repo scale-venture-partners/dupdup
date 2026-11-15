@@ -8,6 +8,9 @@ pub mod rules;
 /// The index of function names that assert, used to see through helpers.
 pub mod helpers;
 
+/// Merged `parametrize` suggestions for clone groups.
+pub mod clones;
+
 pub use helpers::AssertingHelpers;
 
 use crate::config::Config;
