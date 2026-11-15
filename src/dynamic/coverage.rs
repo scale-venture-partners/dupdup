@@ -218,6 +218,54 @@ pub struct LineCoverage {
 }
 
 impl LineCoverage {
+    /// The coverage a diff-scoped check mutates against: for every line a
+    /// touched test covers (`touched`, a run of only those tests), the touched
+    /// tests there plus up to `max_existing` other tests that `existing` (the
+    /// whole suite's coverage, when there is one) says cover it. A line no
+    /// touched test covers is absent, so mutants there have no candidates and
+    /// are skipped.
+    #[must_use]
+    pub fn for_gate(
+        touched: &LineCoverage,
+        existing: Option<&LineCoverage>,
+        is_touched: &dyn Fn(&str) -> bool,
+        max_existing: usize,
+    ) -> LineCoverage {
+        let mut by_line = HashMap::new();
+        for (key, tests) in &touched.by_line {
+            let mut all = tests.clone();
+            if let Some(existing) = existing {
+                let mut others: Vec<String> = existing
+                    .by_line
+                    .get(key)
+                    .map(|v| v.iter().filter(|t| !is_touched(t)).cloned().collect())
+                    .unwrap_or_default();
+                others.sort_unstable();
+                others.dedup();
+                others.truncate(max_existing);
+                all.extend(others);
+            }
+            all.sort_unstable();
+            all.dedup();
+            by_line.insert(key.clone(), all);
+        }
+        LineCoverage {
+            by_line,
+            files: touched.files.clone(),
+        }
+    }
+
+    /// The files with at least one line some test covered, sorted. A file can
+    /// appear in a report (`known_files`) with only import-time lines that no
+    /// test context ran.
+    #[must_use]
+    pub fn covered_files(&self) -> Vec<&str> {
+        let mut files: Vec<&str> = self.by_line.keys().map(|(f, _)| f.as_str()).collect();
+        files.sort_unstable();
+        files.dedup();
+        files
+    }
+
     /// Whether `file` appears in the coverage report at all. A mutation
     /// target that isn't found here is a path-spelling mismatch between
     /// `--source` and the coverage report, not "this file has no coverage"
@@ -493,6 +541,33 @@ mod tests {
         let mut covering = loaded.tests_covering("pkg/mod.py", 2..=3);
         covering.sort();
         assert_eq!(covering, vec!["test_mod.py::test_a", "test_mod.py::test_b"]);
+    }
+
+    #[test]
+    fn for_gate_keeps_touched_lines_and_caps_the_existing_tests_on_them() {
+        let touched = load_line_coverage(
+            write_report(
+                r#"{"files":{"pkg/m.py":{"contexts":{"1":["t.py::new|run"],"2":["t.py::new|run"]}}}}"#,
+            )
+            .path(),
+        )
+        .unwrap();
+        let existing = load_line_coverage(
+            write_report(
+                r#"{"files":{"pkg/m.py":{"contexts":{
+                    "1":["t.py::a|run","t.py::b|run","t.py::c|run","t.py::new|run"],
+                    "3":["t.py::elsewhere|run"]}}}}"#,
+            )
+            .path(),
+        )
+        .unwrap();
+        let is_touched = |id: &str| id == "t.py::new";
+        let gate = LineCoverage::for_gate(&touched, Some(&existing), &is_touched, 2);
+        let line1 = gate.tests_covering("pkg/m.py", 1..=1);
+        assert_eq!(line1, vec!["t.py::a", "t.py::b", "t.py::new"]);
+        assert_eq!(gate.tests_covering("pkg/m.py", 2..=2), vec!["t.py::new"]);
+        assert!(gate.tests_covering("pkg/m.py", 3..=3).is_empty());
+        assert_eq!(gate.covered_files(), vec!["pkg/m.py"]);
     }
 
     #[test]

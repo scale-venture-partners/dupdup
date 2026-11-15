@@ -175,7 +175,7 @@ pub fn called_names(fn_node: Node, source: &[u8]) -> Vec<String> {
 /// A whitespace-insensitive rendering of `node`: its leaf tokens joined by
 /// a single space, comments dropped. Literals are kept, so `x == 1` and
 /// `x == 2` stay different.
-fn token_text(node: Node, source: &[u8]) -> String {
+pub(crate) fn token_text(node: Node, source: &[u8]) -> String {
     fn walk(node: Node, source: &[u8], out: &mut Vec<String>) {
         if node.kind() == "comment" {
             return;

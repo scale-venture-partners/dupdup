@@ -74,6 +74,51 @@ pub fn assertion_fingerprints(
     Ok(out)
 }
 
+/// Every test in `source`, keyed as in [`assertion_fingerprints`], with its
+/// whole definition (decorators included) as a whitespace- and
+/// comment-insensitive token string. Two tests with the same key and the same
+/// text are the same test.
+///
+/// # Errors
+/// Returns an error if `source` can't be parsed as Python.
+pub fn test_sources(source: &str) -> anyhow::Result<std::collections::HashMap<String, String>> {
+    let tree = parse(source)?;
+    let mut out = std::collections::HashMap::new();
+    collect_sources(tree.root_node(), source.as_bytes(), "", &mut out);
+    Ok(out)
+}
+
+fn collect_sources(
+    node: Node,
+    source: &[u8],
+    prefix: &str,
+    out: &mut std::collections::HashMap<String, String>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_definition" => {
+                let name = test_name(child, source);
+                if name.starts_with("test_") {
+                    let whole = child
+                        .parent()
+                        .filter(|p| p.kind() == "decorated_definition")
+                        .unwrap_or(child);
+                    out.insert(format!("{prefix}{name}"), rules::token_text(whole, source));
+                }
+            }
+            "class_definition" => {
+                let name = child
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(source).ok())
+                    .unwrap_or("");
+                collect_sources(child, source, &format!("{prefix}{name}::"), out);
+            }
+            _ => collect_sources(child, source, prefix, out),
+        }
+    }
+}
+
 fn collect_fingerprints(
     node: Node,
     source: &[u8],

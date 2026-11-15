@@ -163,6 +163,62 @@ enum Commands {
         #[arg(long, default_value_t = 100)]
         max_drilldown: usize,
     },
+    /// List the tests this change adds or edits compared with a base
+    /// revision, one pytest node id per line (`pytest $(dupdup changed-tests
+    /// --base origin/main)` runs just those). Cases of a parametrized test are
+    /// selected together.
+    ChangedTests {
+        /// The revision to compare with: a branch, tag or SHA, e.g. origin/main
+        #[arg(long)]
+        base: String,
+        /// Emit JSON (node id and new/changed) instead of plain ids
+        #[arg(long)]
+        json: bool,
+        /// Path to config file (its `exclude` globs apply)
+        #[arg(long, default_value = "dupdup.toml")]
+        config: PathBuf,
+    },
+    /// Check a change's new and edited tests: does each catch anything the
+    /// suite does not already catch? Runs only those tests under coverage,
+    /// mutates only the functions they cover, and runs each mutant against
+    /// them plus a few existing tests on the same lines. Cost scales with the
+    /// diff; --budget-secs caps it.
+    Gate {
+        /// The revision the change is compared with, e.g. origin/main
+        #[arg(long)]
+        base: String,
+        /// pytest command, starting with a Python interpreter, e.g.
+        /// ".venv/bin/python -m pytest -q -p no:cacheprovider -o addopts="
+        #[arg(long, default_value = "python -m pytest -q -p no:cacheprovider")]
+        pytest_cmd: String,
+        /// Package coverage measures (repeatable), e.g. --cov mypkg
+        #[arg(long = "cov", required = true)]
+        cov: Vec<String>,
+        /// Per-test coverage of the whole suite on the default branch
+        /// (`coverage json --show-contexts`), to find existing tests that
+        /// cover the same lines. Without it a test can be shown to kill
+        /// nothing but not to duplicate another.
+        #[arg(long)]
+        baseline_coverage: Option<PathBuf>,
+        /// Stop starting new mutants after this many seconds
+        #[arg(long, default_value_t = 60)]
+        budget_secs: u64,
+        /// Most existing tests per covered line to run beside the new ones
+        #[arg(long, default_value_t = 40)]
+        max_existing: usize,
+        /// Per-invocation pytest timeout, in seconds
+        #[arg(long, default_value_t = 30)]
+        timeout_secs: u64,
+        /// Emit JSON instead of text
+        #[arg(long)]
+        json: bool,
+        /// Exit 1 if any touched test killed none of the mutants it ran against
+        #[arg(long)]
+        strict: bool,
+        /// Path to config file (its `exclude` globs apply)
+        #[arg(long, default_value = "dupdup.toml")]
+        config: PathBuf,
+    },
     /// Write a default dupdup.toml to the current directory
     Init,
 }
@@ -227,6 +283,30 @@ fn main() -> anyhow::Result<()> {
             resume,
             max_drilldown,
         }),
+        Commands::ChangedTests { base, json, config } => run_changed_tests(&base, json, &config),
+        Commands::Gate {
+            base,
+            pytest_cmd,
+            cov,
+            baseline_coverage,
+            budget_secs,
+            max_existing,
+            timeout_secs,
+            json,
+            strict,
+            config,
+        } => run_gate(&GateArgs {
+            base: &base,
+            pytest_cmd: &pytest_cmd,
+            cov,
+            baseline_coverage: baseline_coverage.as_deref(),
+            budget_secs,
+            max_existing,
+            timeout_secs,
+            json,
+            strict,
+            config: &config,
+        }),
         Commands::Init => run_init(),
     }
 }
@@ -244,6 +324,104 @@ enabled = true
 [dupdup.tautological_assert]
 enabled = true
 ";
+
+/// Everything `dupdup gate` was asked to do.
+struct GateArgs<'a> {
+    base: &'a str,
+    pytest_cmd: &'a str,
+    cov: Vec<String>,
+    baseline_coverage: Option<&'a Path>,
+    budget_secs: u64,
+    max_existing: usize,
+    timeout_secs: u64,
+    json: bool,
+    strict: bool,
+    config: &'a Path,
+}
+
+fn run_gate(args: &GateArgs) -> anyhow::Result<()> {
+    use dupdup::gate::{self, Verdict};
+    let config = Config::load(args.config)?;
+    let exclude = compile_globs(&config.exclude)?;
+    let root = git::repo_root(&std::env::current_dir()?)?;
+    let files: Vec<PathBuf> = git::all_files(&root)?
+        .into_iter()
+        .filter(|p| is_python_test_file(p) && !is_excluded(p, &exclude))
+        .collect();
+    let touched = dupdup::changed::touched_tests(&root, args.base, &files)?;
+    eprintln!(
+        "{} test(s) added or changed since {}",
+        touched.len(),
+        args.base
+    );
+    let opts = gate::GateOptions {
+        root: &root,
+        pytest_cmd: args
+            .pytest_cmd
+            .split_whitespace()
+            .map(String::from)
+            .collect(),
+        cov_sources: args.cov.clone(),
+        baseline_coverage: args.baseline_coverage,
+        budget: Duration::from_secs(args.budget_secs),
+        max_existing: args.max_existing,
+        timeout: Duration::from_secs(args.timeout_secs),
+    };
+    let verdicts = gate::run(&opts, &touched)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&verdicts)?);
+    } else {
+        for v in &verdicts {
+            match &v.verdict {
+                Verdict::Unique { mutants } => println!(
+                    "UNIQUE       {}  (kills {} mutant(s) no existing test kills)",
+                    v.node_id,
+                    mutants.len()
+                ),
+                Verdict::Overlap { with } => println!(
+                    "OVERLAP      {}  (kills only what {} also kills)",
+                    v.node_id,
+                    with.join(", ")
+                ),
+                Verdict::KillsNothing { evaluated } => println!(
+                    "KILLS_NOTHING {}  (0 of {evaluated} mutants killed)",
+                    v.node_id
+                ),
+                Verdict::NoEvidence => println!(
+                    "NO_EVIDENCE  {}  (no mutated function covered, or out of time)",
+                    v.node_id
+                ),
+            }
+        }
+    }
+    let nothing = verdicts
+        .iter()
+        .filter(|v| matches!(v.verdict, Verdict::KillsNothing { .. }))
+        .count();
+    if args.strict && nothing > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn run_changed_tests(base: &str, json: bool, config_path: &Path) -> anyhow::Result<()> {
+    let config = Config::load(config_path)?;
+    let exclude = compile_globs(&config.exclude)?;
+    let root = git::repo_root(&std::env::current_dir()?)?;
+    let files: Vec<PathBuf> = git::all_files(&root)?
+        .into_iter()
+        .filter(|p| is_python_test_file(p) && !is_excluded(p, &exclude))
+        .collect();
+    let touched = dupdup::changed::touched_tests(&root, base, &files)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&touched)?);
+    } else {
+        for t in &touched {
+            println!("{}", t.node_id);
+        }
+    }
+    Ok(())
+}
 
 fn run_init() -> anyhow::Result<()> {
     let path = PathBuf::from("dupdup.toml");
@@ -706,6 +884,8 @@ fn run_mutate(opts: &MutateOptions) -> anyhow::Result<()> {
         max_drilldown: opts.max_drilldown,
         env: Vec::new(),
         cwd: None,
+        deadline: None,
+        narrow_candidates: None,
     };
     let resume = match (opts.resume, opts.out) {
         (true, Some(path)) if path.exists() => {
