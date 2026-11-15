@@ -255,6 +255,21 @@ enum Commands {
         #[arg(long, default_value = "dupdup.toml")]
         config: PathBuf,
     },
+    /// Where a suite's time goes, from a pytest `--junitxml` report: the
+    /// slowest tests, how few tests make up half the time, and the slowest
+    /// modules. Removing redundant tests rarely saves much time; this shows
+    /// what would.
+    Slowest {
+        /// pytest `--junitxml` output
+        #[arg(long)]
+        junit_xml: PathBuf,
+        /// How many tests and modules to list
+        #[arg(long, default_value_t = 20)]
+        top: usize,
+        /// Emit JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
     /// Write a default dupdup.toml to the current directory
     Init,
 }
@@ -361,6 +376,11 @@ fn main() -> anyhow::Result<()> {
             strict,
             config: &config,
         }),
+        Commands::Slowest {
+            junit_xml,
+            top,
+            json,
+        } => run_slowest(&junit_xml, top, json),
         Commands::Init => run_init(),
     }
 }
@@ -463,6 +483,37 @@ fn run_gate(args: &GateArgs) -> anyhow::Result<()> {
         .count();
     if args.strict && nothing > 0 {
         std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn run_slowest(junit_xml: &Path, top: usize, json: bool) -> anyhow::Result<()> {
+    let summary = dynamic::junit::load(junit_xml)?;
+    let report = dupdup::slowest::report(&summary.seconds_by_test, top);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!(
+        "{:.1}s over {} tests; {} test(s) make up half the time; the top {} are {:.0}%",
+        report.total_seconds,
+        report.tests,
+        report.tests_for_half,
+        report.top.len(),
+        report.top_percent
+    );
+    println!();
+    println!("slowest tests:");
+    for t in &report.top {
+        println!("  {:>8.2}s {:>5.1}%  {}", t.seconds, t.percent, t.test);
+    }
+    println!();
+    println!("slowest modules:");
+    for m in &report.modules {
+        println!(
+            "  {:>8.1}s {:>5.1}%  {} ({} tests)",
+            m.seconds, m.percent, m.module, m.tests
+        );
     }
     Ok(())
 }
