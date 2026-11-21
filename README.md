@@ -470,9 +470,12 @@ re-runs each candidate alone, but only up to `--max-drilldown` candidates
 (default 100); a mutant with more is left out as inconclusive, which is what
 happens to functions the whole suite depends on.
 
-This runs strictly sequentially — one file, one mutant, one test run at a
-time — so it's slow on a large `--source` set; scope it to the modules you
-actually want mutation coverage of, not a whole codebase at once.
+By default this runs strictly sequentially — one file, one mutant, one test
+run at a time — so it's slow on a large `--source` set; scope it to the
+modules you actually want mutation coverage of, not a whole codebase at once.
+`--workers N` forks N mutants at a time from one pytest process that has
+imported the project once (needs Python 3.11+ and fork), the same runner
+`gate` uses.
 `--pytest-cmd` is split on plain whitespace with no quoting, so a command
 whose own arguments need a space (a quoted path, for instance) doesn't
 work here.
@@ -498,9 +501,9 @@ The literature splits the same way: `pytest_deduplicate`'s own
 duplicate/superset/subset detection, classic coverage-based suite
 minimization, and mutation-subsumption pruning are all necessarily dynamic
 — they need a real run. Empty tests, tautological/duplicate asserts, and
-(planned) structural clone detection for parametrize candidates are static
-— pure AST pattern-matching, same as windbag's comment rules. Folding both
-into one command would mean either making `check` slow (defeating the
+structural clone detection for parametrize candidates (`CLONE_TEST`) are
+static — pure AST pattern-matching, same as windbag's comment rules. Folding
+both into one command would mean either making `check` slow (defeating the
 pre-commit use case) or making `analyze` pretend it doesn't need a real
 run (masking a failure). They're built to compose instead: run `check` on
 every commit, run `analyze` in CI against a real coverage/mutation run.
@@ -520,13 +523,11 @@ every commit, run `analyze` in CI against a real coverage/mutation run.
   statements that check different things is exactly the failure mode found
   calibrating against a real suite; this is the concrete next step for it,
   not yet built or scoped in detail.
-- More mutation operators for `dupdup mutate` (`not` deletion, more
+- More mutation operators in dupdup's built-in set (`not` deletion, more
   arithmetic/bitwise operators, string/collection literal mutations) —
   deliberately left out of the initial fixed set rather than trying to
-  match a general-purpose mutation tool's full operator catalog.
-- Parallel mutant execution for `dupdup mutate` — it runs strictly
-  sequentially today, which is simple to reason about (only one mutant is
-  ever live on disk) but slow on a large `--source` set.
+  match a general-purpose mutation tool's full operator catalog. `gate`
+  (`--operators auto`) and `mutate --from-mutmut` already use mutmut's.
 
 ## Development
 
